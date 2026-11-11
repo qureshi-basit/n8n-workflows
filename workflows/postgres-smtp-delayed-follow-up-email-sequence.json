@@ -1,0 +1,655 @@
+{
+  "name": "Postgres SMTP Delayed Follow-Up Email Sequence",
+  "nodes": [
+    {
+      "id": "w04-1",
+      "name": "Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -760,
+        -320
+      ],
+      "parameters": {
+        "content": "## Delayed follow-up emails without long-running executions\n\n### How it works\n1. Any app POSTs a contact to **Enroll Contact Webhook**. The email is validated and each sequence step is stored in Postgres with its own send time (now, +3 days, +7 days).\n2. Every 15 minutes up to 50 due steps are claimed and sent by SMTP, so an email can go out up to 15 minutes after its send time. Nothing waits for days inside an execution.\n3. A failed send is retried later. After the last attempt the step is marked `failed` with the SMTP error and the contact's remaining steps are cancelled. Find these with `status = 'failed'` in `followup_queue`.\n4. **Stop Sequence Webhook** cancels pending steps when a contact replies, buys or unsubscribes.\n\nA contact is never enrolled twice in the same sequence while it is running. Once it finishes or is stopped, they can be enrolled again. Subjects and bodies are filled in at enrollment, so editing the steps only affects new enrollments.\n\n### Setup\n1. Add a Postgres credential and run **Run Once to Create Table** once.\n2. Add an SMTP credential to **Send Follow-Up Email**.\n3. Add one Header Auth credential (for example header `X-Webhook-Secret`) to both webhooks and send that header with every request.\n4. In **Sequence Settings** set the sender, steps (`{first_name}` is replaced) and retry rules.\n5. Activate, then POST `{\"email\",\"first_name\"}` to enroll and `{\"email\",\"reason\",\"sequence_name\"}` to stop (`sequence_name` optional).\n\nTested on n8n 2.47.3 (Postgres node v2.8).\n\n### Customization\nFor a second sequence, duplicate **Enroll Contact Webhook** and **Sequence Settings**, give the copy a new path and a new `sequence_name`.",
+        "width": 460,
+        "height": 880
+      }
+    },
+    {
+      "id": "w04-2",
+      "name": "Setup Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -260,
+        -320
+      ],
+      "parameters": {
+        "content": "## One-time setup\nRun this once to create the queue table.",
+        "width": 460,
+        "height": 260,
+        "color": 7
+      }
+    },
+    {
+      "id": "w04-3",
+      "name": "Enroll Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -260,
+        0
+      ],
+      "parameters": {
+        "content": "## Enroll a contact\nValidates the request, fills in each step and queues it with its own send time. Ignored while the contact is still in this sequence.",
+        "width": 1260,
+        "height": 400,
+        "color": 7
+      }
+    },
+    {
+      "id": "w04-4",
+      "name": "Stop Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -260,
+        440
+      ],
+      "parameters": {
+        "content": "## Stop a sequence\nCancels every pending step for an email (optionally one sequence only).",
+        "width": 760,
+        "height": 260,
+        "color": 7
+      }
+    },
+    {
+      "id": "w04-5",
+      "name": "Send Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -260,
+        740
+      ],
+      "parameters": {
+        "content": "## Send due emails\nClaims due steps, sends them by SMTP, then marks each sent or schedules a retry. A step stuck in sending for an hour (n8n stopped mid-run) is claimed again, so it can rarely be sent twice.",
+        "width": 1260,
+        "height": 400,
+        "color": 7
+      }
+    },
+    {
+      "id": "w04-6",
+      "name": "Run Once to Create Table",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -200,
+        -180
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "w04-7",
+      "name": "Create Queue Table",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        40,
+        -180
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "CREATE TABLE IF NOT EXISTS followup_queue (\n  id bigserial PRIMARY KEY,\n  email text NOT NULL,\n  first_name text,\n  sequence_name text NOT NULL,\n  step int NOT NULL,\n  subject text NOT NULL,\n  body text NOT NULL,\n  from_email text NOT NULL,\n  send_at timestamptz NOT NULL,\n  status text NOT NULL DEFAULT 'pending',\n  attempts int NOT NULL DEFAULT 0,\n  max_attempts int NOT NULL DEFAULT 3,\n  retry_minutes int NOT NULL DEFAULT 30,\n  last_error text,\n  claimed_at timestamptz,\n  sent_at timestamptz,\n  created_at timestamptz NOT NULL DEFAULT now()\n);\nCREATE INDEX IF NOT EXISTS followup_queue_due ON followup_queue (status, send_at);\nCREATE UNIQUE INDEX IF NOT EXISTS followup_queue_active ON followup_queue (email, sequence_name, step) WHERE status IN ('pending', 'sending');",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "w04-8",
+      "name": "Enroll Contact Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -200,
+        160
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "followup-enroll",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "w04-9",
+      "name": "Sequence Settings",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        20,
+        160
+      ],
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "email",
+              "type": "string",
+              "value": "={{ $json.body.email }}"
+            },
+            {
+              "id": "a2",
+              "name": "first_name",
+              "type": "string",
+              "value": "={{ $json.body.first_name }}"
+            },
+            {
+              "id": "a3",
+              "name": "sequence_name",
+              "type": "string",
+              "value": "welcome"
+            },
+            {
+              "id": "a4",
+              "name": "from_email",
+              "type": "string",
+              "value": "Your Company <hello@example.com>"
+            },
+            {
+              "id": "a5",
+              "name": "max_attempts",
+              "type": "number",
+              "value": 3
+            },
+            {
+              "id": "a6",
+              "name": "retry_minutes",
+              "type": "number",
+              "value": 30
+            },
+            {
+              "id": "a7",
+              "name": "steps",
+              "type": "array",
+              "value": "[\n  {\n    \"delay_hours\": 0,\n    \"subject\": \"Thanks for getting in touch, {first_name}\",\n    \"body\": \"Hi {first_name},\\n\\nThanks for your interest. Reply to this email with any question and a real person will answer.\\n\\nBest regards,\\nThe Team\"\n  },\n  {\n    \"delay_hours\": 72,\n    \"subject\": \"Did you have a chance to look, {first_name}?\",\n    \"body\": \"Hi {first_name},\\n\\nJust checking in to see if you had any questions about what we discussed.\\n\\nBest regards,\\nThe Team\"\n  },\n  {\n    \"delay_hours\": 168,\n    \"subject\": \"Last check-in, {first_name}\",\n    \"body\": \"Hi {first_name},\\n\\nThis is my last follow-up. If now is not the right time, no problem at all. Just reply whenever it suits you.\\n\\nBest regards,\\nThe Team\"\n  }\n]"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "w04-10",
+      "name": "Validate and Build Steps",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        160
+      ],
+      "parameters": {
+        "jsCode": "// Validate the contact and turn the configured steps into queue rows.\nconst s = $input.first().json;\nconst email = String(s.email || '').trim().toLowerCase();\nconst firstName = String(s.first_name || '').trim() || 'there';\nif (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)) {\n  return [{ json: { valid: false, error: 'A valid \"email\" field is required in the request body.' } }];\n}\nconst steps = Array.isArray(s.steps) ? s.steps : [];\nif (!steps.length) return [{ json: { valid: false, error: 'Sequence Settings has no steps configured.' } }];\nconst fill = (t) => String(t || '').replaceAll('{first_name}', firstName);\nconst now = Date.now();\nconst rows = steps.map((st, i) => ({\n  email,\n  first_name: firstName,\n  sequence_name: s.sequence_name,\n  step: i + 1,\n  subject: fill(st.subject),\n  body: fill(st.body),\n  send_at: new Date(now + Number(st.delay_hours || 0) * 3600 * 1000).toISOString(),\n  from_email: s.from_email,\n  max_attempts: Number(s.max_attempts) || 3,\n  retry_minutes: Number(s.retry_minutes) || 30,\n}));\nreturn [{ json: { valid: true, email, sequence_name: s.sequence_name, rows } }];"
+      }
+    },
+    {
+      "id": "w04-11",
+      "name": "Is Request Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        460,
+        160
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "w04-12",
+      "name": "Queue Sequence Steps",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        700,
+        80
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH ins AS (\n  INSERT INTO followup_queue (email, first_name, sequence_name, step, subject, body, from_email, send_at, max_attempts, retry_minutes)\n  SELECT email, first_name, sequence_name, step, subject, body, from_email, send_at, max_attempts, retry_minutes\n  FROM jsonb_to_recordset($1::jsonb) AS r(email text, first_name text, sequence_name text, step int, subject text, body text, from_email text, send_at timestamptz, max_attempts int, retry_minutes int)\n  WHERE NOT EXISTS (\n    SELECT 1 FROM followup_queue q\n    WHERE q.email = r.email AND q.sequence_name = r.sequence_name AND q.status IN ('pending', 'sending')\n  )\n  ON CONFLICT DO NOTHING\n  RETURNING 1\n)\nSELECT count(*)::int AS steps_scheduled FROM ins;",
+        "options": {
+          "queryReplacement": "={{ JSON.stringify($json.rows) }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "w04-13",
+      "name": "Respond Enrolled",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        900,
+        80
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: $json.steps_scheduled > 0 ? 'enrolled' : 'already_enrolled', email: $('Validate and Build Steps').item.json.email, steps_scheduled: $json.steps_scheduled }) }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "w04-14",
+      "name": "Respond Invalid Request",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        700,
+        260
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'error', message: $json.error }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      }
+    },
+    {
+      "id": "w04-15",
+      "name": "Stop Sequence Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -200,
+        560
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "followup-stop",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "w04-16",
+      "name": "Cancel Pending Steps",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        40,
+        560
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH upd AS (\n  UPDATE followup_queue\n  SET status = 'cancelled', last_error = 'stopped: ' || $2\n  WHERE email = lower(trim($1)) AND status = 'pending' AND ($3 = '' OR sequence_name = $3)\n  RETURNING 1\n)\nSELECT count(*)::int AS steps_cancelled FROM upd;",
+        "options": {
+          "queryReplacement": "={{ $json.body.email || '' }},{{ $json.body.reason || 'manual' }},{{ $json.body.sequence_name || '' }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "w04-17",
+      "name": "Respond Cancelled",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        280,
+        560
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'stopped', steps_cancelled: $json.steps_cancelled }) }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "w04-18",
+      "name": "Every 15 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -200,
+        900
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "w04-19",
+      "name": "Claim Due Steps",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        40,
+        900
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE followup_queue\nSET status = 'sending', claimed_at = now()\nWHERE id IN (\n  SELECT id FROM followup_queue\n  WHERE (status = 'pending' AND send_at <= now())\n     OR (status = 'sending' AND claimed_at < now() - interval '1 hour')\n  ORDER BY send_at\n  LIMIT 50\n  FOR UPDATE SKIP LOCKED\n)\nRETURNING id, email, subject, body, from_email, attempts, max_attempts, retry_minutes;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "w04-20",
+      "name": "Any Steps Due?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        260,
+        900
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c2",
+              "leftValue": "={{ $json.id !== undefined }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "w04-21",
+      "name": "Send Follow-Up Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "onError": "continueErrorOutput",
+      "position": [
+        480,
+        900
+      ],
+      "parameters": {
+        "fromEmail": "={{ $json.from_email }}",
+        "toEmail": "={{ $json.email }}",
+        "subject": "={{ $json.subject }}",
+        "emailFormat": "text",
+        "text": "={{ $json.body }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "smtp": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "w04-22",
+      "name": "Mark Step Sent",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        760,
+        820
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE followup_queue SET status = 'sent', sent_at = now(), last_error = NULL WHERE id = $1 RETURNING id, email, step, status;",
+        "options": {
+          "queryReplacement": "={{ $('Claim Due Steps').item.json.id }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "w04-23",
+      "name": "Schedule Retry or Mark Failed",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        760,
+        1000
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH f AS (\n  UPDATE followup_queue\n  SET attempts = attempts + 1,\n      last_error = left($2, 500),\n      status = CASE WHEN attempts + 1 >= max_attempts THEN 'failed' ELSE 'pending' END,\n      send_at = now() + make_interval(mins => retry_minutes)\n  WHERE id = $1\n  RETURNING id, email, sequence_name, step, status, attempts, last_error\n), later AS (\n  UPDATE followup_queue q\n  SET status = 'cancelled', last_error = 'cancelled: step ' || f.step || ' failed permanently'\n  FROM f\n  WHERE f.status = 'failed' AND q.email = f.email AND q.sequence_name = f.sequence_name AND q.status = 'pending'\n  RETURNING q.id\n)\nSELECT f.*, (SELECT count(*) FROM later)::int AS later_steps_cancelled FROM f;",
+        "options": {
+          "queryReplacement": "={{ $('Claim Due Steps').item.json.id }},{{ $json.error?.message || $json.error || 'SMTP send failed' }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "name": "Your credential"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Run Once to Create Table": {
+      "main": [
+        [
+          {
+            "node": "Create Queue Table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enroll Contact Webhook": {
+      "main": [
+        [
+          {
+            "node": "Sequence Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sequence Settings": {
+      "main": [
+        [
+          {
+            "node": "Validate and Build Steps",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate and Build Steps": {
+      "main": [
+        [
+          {
+            "node": "Is Request Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Request Valid?": {
+      "main": [
+        [
+          {
+            "node": "Queue Sequence Steps",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Invalid Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Queue Sequence Steps": {
+      "main": [
+        [
+          {
+            "node": "Respond Enrolled",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stop Sequence Webhook": {
+      "main": [
+        [
+          {
+            "node": "Cancel Pending Steps",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cancel Pending Steps": {
+      "main": [
+        [
+          {
+            "node": "Respond Cancelled",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every 15 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Claim Due Steps",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Due Steps": {
+      "main": [
+        [
+          {
+            "node": "Any Steps Due?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Steps Due?": {
+      "main": [
+        [
+          {
+            "node": "Send Follow-Up Email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Send Follow-Up Email": {
+      "main": [
+        [
+          {
+            "node": "Mark Step Sent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Schedule Retry or Mark Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {}
+}

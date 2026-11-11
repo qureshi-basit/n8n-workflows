@@ -1,0 +1,692 @@
+{
+  "name": "Postgres Appointment Booking Form with Staff Conflict Check",
+  "nodes": [
+    {
+      "id": "w05-1",
+      "name": "Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -860,
+        -360
+      ],
+      "parameters": {
+        "content": "## Appointment booking form that cannot double-book\n\n### How it works\n1. A customer picks a date and time in **Booking Request Form**.\n2. **Validate Request** checks name, email, notice period and booking window, and finds staff who work at that time.\n3. **Reserve First Free Staff** calls a Postgres function that tries those staff in order. Unique indexes make Postgres refuse a double booking, and if two people submit at once the second gets the next free staff member.\n4. The customer gets a confirmation email with their notes (owner in copy) and a confirmation page. If the email fails, the booking stays, the page says so and the error is saved in `confirmation_error` (the owner copy is lost too).\n5. If everyone is busy, the page offers the next 5 free times. A repeated submission shows the existing booking.\n\n### Setup\n1. Add a Postgres credential to every Postgres node and run **Run Once to Create Table** once.\n2. Add an SMTP credential to **Send Confirmation**.\n3. In **Booking Settings** set `business_name`, `from_email` (an address your SMTP account may send from), `notify_email`, `slot_minutes`, `min_notice_hours`, `max_days_ahead` and `staff`.\n4. Keep the form's **Time** options on the staff hours and slot grid. Set your timezone in Workflow settings > Timezone.\n5. Activate the workflow and share the Production URL from **Booking Request Form**.\n\nAll bookings have the same length. If Postgres is unreachable the customer sees an error page and nothing is booked, so set an Error Workflow.\n\nTested on n8n 2.47.3 (Postgres node v2.8, Form Trigger v2.3).\n\n### Customization\nAdd staff or change hours in **Booking Settings**. To cancel a booking, set its `status` to `cancelled` in `bookings`.",
+        "width": 520,
+        "height": 1240
+      }
+    },
+    {
+      "id": "w05-2",
+      "name": "Setup Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -320,
+        -360
+      ],
+      "parameters": {
+        "content": "## One-time setup\nCreates the bookings table, the unique indexes that block double bookings and the booking function.",
+        "width": 520,
+        "height": 260,
+        "color": 7
+      }
+    },
+    {
+      "id": "w05-3",
+      "name": "Booking Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -320,
+        -80
+      ],
+      "parameters": {
+        "content": "## Validate and reserve\nRequests with no name, a bad email, too little notice, a date too far ahead or no staff working get the could-not-book page. Valid ones are reserved in Postgres.",
+        "width": 1180,
+        "height": 560,
+        "color": 7
+      }
+    },
+    {
+      "id": "w05-4",
+      "name": "Result Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        880,
+        -80
+      ],
+      "parameters": {
+        "content": "## Tell the customer\nConfirmation email and page, existing booking, or the next free times.",
+        "width": 1100,
+        "height": 960,
+        "color": 7
+      }
+    },
+    {
+      "id": "w05-5",
+      "name": "Run Once to Create Table",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -260,
+        -220
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "w05-6",
+      "name": "Create Bookings Table",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        -20,
+        -220
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "CREATE TABLE IF NOT EXISTS bookings (\n  id bigserial PRIMARY KEY,\n  staff text NOT NULL,\n  customer_name text NOT NULL,\n  customer_email text NOT NULL,\n  starts_at timestamptz NOT NULL,\n  ends_at timestamptz NOT NULL,\n  notes text,\n  status text NOT NULL DEFAULT 'confirmed',\n  confirmation_error text,\n  created_at timestamptz NOT NULL DEFAULT now()\n);\nCREATE UNIQUE INDEX IF NOT EXISTS bookings_one_per_staff_slot ON bookings (staff, starts_at) WHERE status = 'confirmed';\nCREATE UNIQUE INDEX IF NOT EXISTS bookings_one_per_customer_slot ON bookings (customer_email, starts_at) WHERE status = 'confirmed';\nCREATE INDEX IF NOT EXISTS bookings_start ON bookings (starts_at);\nCREATE OR REPLACE FUNCTION n8n_book_first_free(p_name text, p_email text, p_start timestamptz, p_end timestamptz, p_notes text, p_staff text[])\nRETURNS TABLE (booking_id bigint, staff text, existing_id bigint, existing_staff text)\nLANGUAGE plpgsql AS $$\n#variable_conflict use_column\nDECLARE s text; v_id bigint;\nBEGIN\n  -- Each INSERT below sees bookings committed a moment ago, so a lost race on one staff member moves on to the next.\n  SELECT b.id, b.staff INTO existing_id, existing_staff FROM bookings b\n  WHERE b.customer_email = p_email AND b.starts_at = p_start AND b.status = 'confirmed' LIMIT 1;\n  IF existing_id IS NOT NULL THEN RETURN NEXT; RETURN; END IF;\n  FOREACH s IN ARRAY p_staff LOOP\n    v_id := NULL;\n    INSERT INTO bookings (staff, customer_name, customer_email, starts_at, ends_at, notes)\n    VALUES (s, p_name, p_email, p_start, p_end, p_notes)\n    ON CONFLICT DO NOTHING RETURNING id INTO v_id;\n    IF v_id IS NOT NULL THEN booking_id := v_id; staff := s; RETURN NEXT; RETURN; END IF;\n  END LOOP;\n  SELECT b.id, b.staff INTO existing_id, existing_staff FROM bookings b\n  WHERE b.customer_email = p_email AND b.starts_at = p_start AND b.status = 'confirmed' LIMIT 1;\n  RETURN NEXT;\nEND $$;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "w05-7",
+      "name": "Booking Request Form",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.3,
+      "position": [
+        -260,
+        160
+      ],
+      "parameters": {
+        "formTitle": "Book an appointment",
+        "formDescription": "Choose a date and time. You will get a confirmation email straight away.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Name",
+              "fieldType": "text",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Email",
+              "fieldType": "email",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Date",
+              "fieldType": "date",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Time",
+              "fieldType": "dropdown",
+              "requiredField": true,
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "09:00"
+                  },
+                  {
+                    "option": "10:00"
+                  },
+                  {
+                    "option": "11:00"
+                  },
+                  {
+                    "option": "12:00"
+                  },
+                  {
+                    "option": "13:00"
+                  },
+                  {
+                    "option": "14:00"
+                  },
+                  {
+                    "option": "15:00"
+                  },
+                  {
+                    "option": "16:00"
+                  }
+                ]
+              }
+            },
+            {
+              "fieldLabel": "Notes",
+              "fieldType": "textarea"
+            }
+          ]
+        },
+        "options": {
+          "appendAttribution": false,
+          "path": "book-appointment"
+        }
+      }
+    },
+    {
+      "id": "w05-8",
+      "name": "Booking Settings",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -40,
+        160
+      ],
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": true,
+        "include": "all",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "k1",
+              "name": "business_name",
+              "type": "string",
+              "value": "Example Studio"
+            },
+            {
+              "id": "k2",
+              "name": "from_email",
+              "type": "string",
+              "value": "Example Studio <bookings@example.com>"
+            },
+            {
+              "id": "k3",
+              "name": "notify_email",
+              "type": "string",
+              "value": "owner@example.com"
+            },
+            {
+              "id": "k4",
+              "name": "slot_minutes",
+              "type": "number",
+              "value": 60
+            },
+            {
+              "id": "k5",
+              "name": "min_notice_hours",
+              "type": "number",
+              "value": 2
+            },
+            {
+              "id": "k6",
+              "name": "max_days_ahead",
+              "type": "number",
+              "value": 60
+            },
+            {
+              "id": "k7",
+              "name": "staff",
+              "type": "array",
+              "value": "[\n  {\n    \"name\": \"Alex\",\n    \"days\": [\n      \"Mon\",\n      \"Tue\",\n      \"Wed\",\n      \"Thu\",\n      \"Fri\"\n    ],\n    \"start\": \"09:00\",\n    \"end\": \"17:00\"\n  },\n  {\n    \"name\": \"Sam\",\n    \"days\": [\n      \"Tue\",\n      \"Thu\",\n      \"Sat\"\n    ],\n    \"start\": \"10:00\",\n    \"end\": \"16:00\"\n  }\n]"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "w05-9",
+      "name": "Validate Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        180,
+        160
+      ],
+      "parameters": {
+        "jsCode": "// Check the request and work out which staff could take this slot.\nconst s = $input.first().json;\nconst zone = $now.zoneName;\nconst fail = (error) => [{ json: { valid: false, error } }];\nconst email = String(s.Email || '').trim().toLowerCase();\nconst name = String(s.Name || '').trim();\nif (!name) return fail('Please enter your name.');\nif (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)) return fail('Please enter a valid email address.');\nconst start = DateTime.fromISO(String(s.Date) + 'T' + String(s.Time), { zone });\nif (!start.isValid) return fail('Please choose a valid date and time.');\nconst slot = Number(s.slot_minutes) || 60;\nconst end = start.plus({ minutes: slot });\nif (start < $now) return fail('That time has already passed. Please choose a future date.');\nif (start < $now.plus({ hours: Number(s.min_notice_hours) || 0 })) return fail('That time is too soon. Bookings need at least ' + (Number(s.min_notice_hours) || 0) + ' hours notice.');\nif (start > $now.plus({ days: Number(s.max_days_ahead) || 60 })) return fail('That date is too far ahead. You can book up to ' + (Number(s.max_days_ahead) || 60) + ' days in advance.');\nconst staff = Array.isArray(s.staff) ? s.staff : [];\nconst day = start.toFormat('ccc');\nconst eligible = staff.filter((p) => {\n  if (!(p.days || []).includes(day)) return false;\n  const open = DateTime.fromISO(start.toISODate() + 'T' + p.start, { zone });\n  const close = DateTime.fromISO(start.toISODate() + 'T' + p.end, { zone });\n  if (start < open || end > close) return false;\n  return Math.round(start.diff(open, 'minutes').minutes) % slot === 0;\n}).map((p) => p.name);\nif (!eligible.length) return fail('Nobody works at ' + start.toFormat('cccc d LLLL, HH:mm') + '. Please choose another time.');\nreturn [{ json: {\n  valid: true, name, email, notes: String(s.Notes || '').slice(0, 1000),\n  starts_at: start.toUTC().toISO(), ends_at: end.toUTC().toISO(),\n  when: start.toFormat('cccc d LLLL yyyy, HH:mm') + ' (' + start.toFormat('ZZZZ') + ')',\n  eligible_staff: eligible,\n} }];"
+      }
+    },
+    {
+      "id": "w05-10",
+      "name": "Request Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        400,
+        160
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "w05-11",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "w05-12",
+      "name": "Request Not Possible",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.3,
+      "position": [
+        620,
+        340
+      ],
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "text",
+        "completionTitle": "We could not book that",
+        "completionMessage": "={{ $json.error }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "w05-13",
+      "name": "Reserve First Free Staff",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        620,
+        80
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM n8n_book_first_free($1, $2, $3::timestamptz, $4::timestamptz, $5, string_to_array($6, '|'));",
+        "options": {
+          "queryReplacement": "={{ $json.name }},{{ $json.email }},{{ $json.starts_at }},{{ $json.ends_at }},{{ $json.notes }},{{ $json.eligible_staff.join('|') }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "w05-14",
+      "name": "Booked?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        940,
+        80
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "w05-15",
+              "leftValue": "={{ $json.booking_id !== null && $json.booking_id !== undefined }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "w05-16",
+      "name": "Send Confirmation",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "onError": "continueErrorOutput",
+      "position": [
+        1160,
+        0
+      ],
+      "parameters": {
+        "fromEmail": "={{ $('Booking Settings').first().json.from_email }}",
+        "toEmail": "={{ $('Validate Request').first().json.email }}",
+        "subject": "=Your appointment on {{ $('Validate Request').first().json.when }} is confirmed",
+        "emailFormat": "html",
+        "html": "=<p>Hi {{ $('Validate Request').first().json.name.replace(/&/g, '&amp;').replace(/</g, '&lt;') }},</p>\n<p>Your appointment with <b>{{ $json.staff.replace(/&/g, '&amp;').replace(/</g, '&lt;') }}</b> at {{ $('Booking Settings').first().json.business_name.replace(/&/g, '&amp;').replace(/</g, '&lt;') }} is confirmed for <b>{{ $('Validate Request').first().json.when }}</b>.</p>\n<p>Booking reference: #{{ $json.booking_id }}</p>\n{{ $('Validate Request').first().json.notes ? '<p>Your notes: ' + $('Validate Request').first().json.notes.replace(/&/g, '&amp;').replace(/</g, '&lt;') + '</p>' : '' }}\n<p>Reply to this email if you need to change it.</p>",
+        "options": {
+          "appendAttribution": false,
+          "bccEmail": "={{ $('Booking Settings').first().json.notify_email }}"
+        }
+      },
+      "credentials": {
+        "smtp": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "w05-17",
+      "name": "Record Email Failure",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        1400,
+        140
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE bookings SET confirmation_error = left($2, 500) WHERE id = $1::bigint RETURNING id;",
+        "options": {
+          "queryReplacement": "={{ $('Reserve First Free Staff').first().json.booking_id }},{{ $json.error?.message || $json.message || $json.error || 'SMTP send failed' }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "w05-18",
+      "name": "Booking Confirmed",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.3,
+      "executeOnce": true,
+      "position": [
+        1640,
+        0
+      ],
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "text",
+        "completionTitle": "Booking confirmed",
+        "completionMessage": "=You are booked with {{ $('Reserve First Free Staff').first().json.staff }} on {{ $('Validate Request').first().json.when }}. Booking reference #{{ $('Reserve First Free Staff').first().json.booking_id }}. {{ $('Record Email Failure').isExecuted ? 'We could not send the confirmation email, so please keep this page.' : 'A confirmation email is on its way.' }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "w05-19",
+      "name": "Already Booked by You?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1160,
+        360
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "w05-20",
+              "leftValue": "={{ $json.existing_id !== null && $json.existing_id !== undefined }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "w05-21",
+      "name": "Existing Booking",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.3,
+      "position": [
+        1400,
+        300
+      ],
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "text",
+        "completionTitle": "You already have this booking",
+        "completionMessage": "=You are already booked with {{ $json.existing_staff }} on {{ $('Validate Request').first().json.when }} (reference #{{ $json.existing_id }}). Nothing was changed.",
+        "options": {}
+      }
+    },
+    {
+      "id": "w05-22",
+      "name": "Load Upcoming Bookings",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "alwaysOutputData": true,
+      "position": [
+        1400,
+        540
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT staff, starts_at FROM bookings\nWHERE status = 'confirmed' AND starts_at >= now() AND starts_at < $1::timestamptz + interval '15 days';",
+        "options": {
+          "queryReplacement": "={{ $('Validate Request').first().json.starts_at }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "w05-23",
+      "name": "Suggest Free Times",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1640,
+        540
+      ],
+      "parameters": {
+        "jsCode": "// Next free times (any staff) from the requested day onward, using the same rules as Validate Request.\nconst s = $('Booking Settings').first().json;\nconst req = $('Validate Request').first().json;\nconst zone = $now.zoneName;\nconst slot = Number(s.slot_minutes) || 60;\nconst earliest = $now.plus({ hours: Number(s.min_notice_hours) || 0 });\nconst latest = $now.plus({ days: Number(s.max_days_ahead) || 60 });\nconst booked = new Set($input.all().map((i) => i.json).filter((b) => b.staff).map((b) => b.staff + '|' + DateTime.fromISO(String(b.starts_at)).toUTC().toISO()));\nconst found = [];\nlet day = DateTime.fromISO(req.starts_at).setZone(zone).startOf('day');\nfor (let d = 0; d < 14 && found.length < 5; d++, day = day.plus({ days: 1 })) {\n  const times = new Map();\n  for (const p of s.staff || []) {\n    if (!(p.days || []).includes(day.toFormat('ccc'))) continue;\n    const close = DateTime.fromISO(day.toISODate() + 'T' + p.end, { zone });\n    for (let t = DateTime.fromISO(day.toISODate() + 'T' + p.start, { zone }); t.plus({ minutes: slot }) <= close; t = t.plus({ minutes: slot })) {\n      if (t < earliest || t > latest || booked.has(p.name + '|' + t.toUTC().toISO())) continue;\n      times.set(t.toMillis(), t);\n    }\n  }\n  for (const t of [...times.values()].sort((a, b) => a - b)) { if (found.length < 5) found.push(t.toFormat('ccc d LLL, HH:mm')); }\n}\nreturn [{ json: { suggestions: found.length ? found.join(' | ') : 'no free times in the next two weeks' } }];"
+      }
+    },
+    {
+      "id": "w05-24",
+      "name": "Time Taken",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.3,
+      "position": [
+        1860,
+        540
+      ],
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "text",
+        "completionTitle": "That time was just taken",
+        "completionMessage": "=Sorry, nobody is free on {{ $('Validate Request').first().json.when }}. Next free times: {{ $json.suggestions }}. Please submit the form again with one of these.",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Run Once to Create Table": {
+      "main": [
+        [
+          {
+            "node": "Create Bookings Table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Booking Request Form": {
+      "main": [
+        [
+          {
+            "node": "Booking Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Booking Settings": {
+      "main": [
+        [
+          {
+            "node": "Validate Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Request": {
+      "main": [
+        [
+          {
+            "node": "Request Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Request Valid?": {
+      "main": [
+        [
+          {
+            "node": "Reserve First Free Staff",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Request Not Possible",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reserve First Free Staff": {
+      "main": [
+        [
+          {
+            "node": "Booked?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Booked?": {
+      "main": [
+        [
+          {
+            "node": "Send Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Already Booked by You?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Confirmation": {
+      "main": [
+        [
+          {
+            "node": "Booking Confirmed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Email Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Email Failure": {
+      "main": [
+        [
+          {
+            "node": "Booking Confirmed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Already Booked by You?": {
+      "main": [
+        [
+          {
+            "node": "Existing Booking",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Load Upcoming Bookings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Upcoming Bookings": {
+      "main": [
+        [
+          {
+            "node": "Suggest Free Times",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Suggest Free Times": {
+      "main": [
+        [
+          {
+            "node": "Time Taken",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {}
+}

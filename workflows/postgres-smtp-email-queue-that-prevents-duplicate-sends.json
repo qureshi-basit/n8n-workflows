@@ -1,0 +1,1128 @@
+{
+  "name": "Postgres SMTP Email Queue That Prevents Duplicate Sends",
+  "nodes": [
+    {
+      "id": "q1-1",
+      "name": "Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -920,
+        -420
+      ],
+      "parameters": {
+        "content": "## Email outbox that never sends twice\n\n### How it works\n1. Any workflow POSTs JSON with `to`, `subject`, `html` and/or `text` and a `dedupe_key` (e.g. `invoice-123-reminder-1`) to **Enqueue Email Webhook**.\n2. Postgres stores each key once; a repeat, even simultaneous, gets `duplicate` with the stored status.\n3. Every minute up to `batch_size` due emails are claimed with row locks (no two runs share one) and sent.\n4. 4xx replies, SMTP login failures (530, 534, 535), refused connections, unknown hosts and a missing greeting retry with growing delays. Other 5xx replies fail the email; a 5.1.x recipient rejection (no such mailbox) also blocks the address.\n5. Delivery is at most once: an email with an unknown outcome (n8n stopped mid-send, other errors without an SMTP code) is marked `stuck`, never resent, and you are alerted. A daily summary reports counts.\n\n### Setup\n1. Add a Postgres credential (user needs CREATE) to all seven Postgres nodes and run **Run Once to Create Tables**.\n2. Add an SMTP credential to the three email nodes.\n3. Add a Header Auth credential to the webhook; callers send that header.\n4. In **Outbox Settings** set `from_email` (an address your SMTP account may use), `owner_email`, `batch_size`, `max_attempts`, `retry_base_minutes`, `max_body_chars` and `stuck_after_minutes` (longer than your slowest batch: `batch_size` × SMTP send time).\n5. Set your timezone in Workflow settings, activate, and copy the webhook's Production URL.\n\n### Customization\nChange the send interval in **Every Minute**. Re-queue a stuck email only after checking it never arrived. To unblock an address, delete it from `email_suppression`. If Postgres is down, callers get 503 and alerts and summaries stop; set an Error Workflow.\n\nTested on n8n 2.47.4 (Postgres node v2.8).",
+        "width": 540,
+        "height": 1300
+      }
+    },
+    {
+      "id": "q1-2",
+      "name": "Setup Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -340,
+        -420
+      ],
+      "parameters": {
+        "content": "## One-time setup\nCreates the outbox and suppression tables and the enqueue function.",
+        "width": 760,
+        "height": 260,
+        "color": 7
+      }
+    },
+    {
+      "id": "q1-3",
+      "name": "Route Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -340,
+        -120
+      ],
+      "parameters": {
+        "content": "## Shared settings\nEvery trigger passes through **Outbox Settings**, then goes to its own path.",
+        "width": 760,
+        "height": 640,
+        "color": 7
+      }
+    },
+    {
+      "id": "q1-4",
+      "name": "Enqueue Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        460,
+        -420
+      ],
+      "parameters": {
+        "content": "## Enqueue once per dedupe_key\nValidates the request, then stores it unless the key or address is already known. Replies 202 queued, 200 duplicate, 409 blocked address, 400 invalid or 503 database unavailable.",
+        "width": 1100,
+        "height": 600,
+        "color": 7
+      }
+    },
+    {
+      "id": "q1-5",
+      "name": "Send Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        460,
+        220
+      ],
+      "parameters": {
+        "content": "## Send due emails\nMarks old sends as stuck and alerts the owner, claims due emails with SKIP LOCKED, sends them, then records sent, retry, failed or stuck. If the alert email fails, stuck emails still show in the daily summary.",
+        "width": 1820,
+        "height": 520,
+        "color": 7
+      }
+    },
+    {
+      "id": "q1-6",
+      "name": "Summary Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        460,
+        780
+      ],
+      "parameters": {
+        "content": "## Daily summary\nCounts sent, failed, waiting and stuck emails and mails them to the owner.",
+        "width": 760,
+        "height": 260,
+        "color": 7
+      }
+    },
+    {
+      "id": "q1-7",
+      "name": "Run Once to Create Tables",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -280,
+        -300
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "q1-8",
+      "name": "Create Outbox Tables",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        -40,
+        -300
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "CREATE TABLE IF NOT EXISTS email_outbox (\n  id bigserial PRIMARY KEY,\n  dedupe_key text NOT NULL UNIQUE,\n  to_email text NOT NULL,\n  subject text NOT NULL,\n  body_html text NOT NULL,\n  body_text text NOT NULL,\n  content_hash text NOT NULL,\n  status text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'sending', 'sent', 'retry', 'failed', 'stuck')),\n  attempts int NOT NULL DEFAULT 0,\n  next_attempt_at timestamptz NOT NULL DEFAULT now(),\n  claimed_at timestamptz,\n  last_error text,\n  stuck_reported boolean NOT NULL DEFAULT false,\n  created_at timestamptz NOT NULL DEFAULT now(),\n  updated_at timestamptz NOT NULL DEFAULT now(),\n  sent_at timestamptz\n);\nCREATE INDEX IF NOT EXISTS email_outbox_due ON email_outbox (status, next_attempt_at);\nCREATE TABLE IF NOT EXISTS email_suppression (\n  email text PRIMARY KEY,\n  reason text NOT NULL,\n  created_at timestamptz NOT NULL DEFAULT now()\n);\nCREATE OR REPLACE FUNCTION email_outbox_enqueue(p_key text, p_to text, p_subject text, p_html text, p_text text)\nRETURNS TABLE (outcome text, id bigint, status text, attempts int, sent_at timestamptz, same_content boolean, reason text)\nLANGUAGE plpgsql AS $$\n#variable_conflict use_column\nDECLARE\n  v_hash text := md5(p_to || chr(10) || p_subject || chr(10) || p_html || chr(10) || p_text);\n  v_id bigint;\n  v_reason text;\nBEGIN\n  -- Each statement sees rows committed a moment ago, so a twin request that won the race is found here.\n  RETURN QUERY SELECT 'duplicate'::text, o.id, o.status, o.attempts, o.sent_at, o.content_hash = v_hash, NULL::text\n    FROM email_outbox o WHERE o.dedupe_key = p_key;\n  IF FOUND THEN RETURN; END IF;\n  SELECT s.reason INTO v_reason FROM email_suppression s WHERE s.email = p_to;\n  IF FOUND THEN\n    RETURN QUERY SELECT 'suppressed'::text, NULL::bigint, NULL::text, NULL::int, NULL::timestamptz, NULL::boolean, v_reason;\n    RETURN;\n  END IF;\n  INSERT INTO email_outbox (dedupe_key, to_email, subject, body_html, body_text, content_hash)\n  VALUES (p_key, p_to, p_subject, p_html, p_text, v_hash)\n  ON CONFLICT (dedupe_key) DO NOTHING\n  RETURNING email_outbox.id INTO v_id;\n  IF v_id IS NOT NULL THEN\n    RETURN QUERY SELECT 'queued'::text, v_id, 'queued'::text, 0, NULL::timestamptz, true, NULL::text;\n    RETURN;\n  END IF;\n  RETURN QUERY SELECT 'duplicate'::text, o.id, o.status, o.attempts, o.sent_at, o.content_hash = v_hash, NULL::text\n    FROM email_outbox o WHERE o.dedupe_key = p_key;\nEND $$;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "q1-9",
+      "name": "Enqueue Email Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -280,
+        20
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "email-outbox",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "q1-10",
+      "name": "Every Minute",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -280,
+        200
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "q1-11",
+      "name": "Daily Summary at 8am",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -280,
+        380
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "triggerAtHour": 8
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "q1-12",
+      "name": "Outbox Settings",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -60,
+        200
+      ],
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": true,
+        "include": "all",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "s1",
+              "name": "from_email",
+              "type": "string",
+              "value": "Your Company <outbox@example.com>"
+            },
+            {
+              "id": "s2",
+              "name": "owner_email",
+              "type": "string",
+              "value": "owner@example.com"
+            },
+            {
+              "id": "s3",
+              "name": "batch_size",
+              "type": "number",
+              "value": 20
+            },
+            {
+              "id": "s4",
+              "name": "max_attempts",
+              "type": "number",
+              "value": 5
+            },
+            {
+              "id": "s5",
+              "name": "retry_base_minutes",
+              "type": "number",
+              "value": 5
+            },
+            {
+              "id": "s6",
+              "name": "stuck_after_minutes",
+              "type": "number",
+              "value": 15
+            },
+            {
+              "id": "s7",
+              "name": "max_body_chars",
+              "type": "number",
+              "value": 200000
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "q1-16",
+      "name": "Which Trigger?",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        160,
+        200
+      ],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "q1-13",
+                    "leftValue": "={{ $('Enqueue Email Webhook').isExecuted }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Enqueue"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "q1-14",
+                    "leftValue": "={{ $('Every Minute').isExecuted }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Send"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "q1-15",
+                    "leftValue": "={{ $('Daily Summary at 8am').isExecuted }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Summary"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "q1-17",
+      "name": "Validate Email Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        520,
+        -200
+      ],
+      "parameters": {
+        "jsCode": "// Server-side checks. Nothing reaches the database unless every field is valid.\nconst s = $input.first().json;\nconst b = s.body;\nconst fail = (error) => [{ json: { valid: false, error } }];\nif (!b || typeof b !== 'object' || Array.isArray(b)) return fail('Send a JSON object with to, subject, html or text, and dedupe_key.');\nconst str = (v) => (typeof v === 'string' || typeof v === 'number') ? String(v).trim() : '';\nconst key = str(b.dedupe_key);\nif (!key) return fail('\"dedupe_key\" is required, for example \"invoice-123-reminder-1\".');\nif (key.length > 200 || !/^[\\x21-\\x7E]+$/.test(key)) return fail('\"dedupe_key\" must be 1-200 visible characters without spaces.');\nconst to = str(b.to).toLowerCase();\nif (!to) return fail('\"to\" is required.');\nif (to.length > 254 || !/^[^\\s@,;<>\"]+@[^\\s@,;<>\"]+\\.[^\\s@,;<>\"]+$/.test(to)) return fail('\"to\" must be one valid email address.');\nconst subject = str(b.subject);\nif (!subject) return fail('\"subject\" is required.');\nif (subject.length > 250 || /[\\r\\n]/.test(subject)) return fail('\"subject\" must be one line of at most 250 characters.');\nlet html = typeof b.html === 'string' ? b.html.trim() : '';\nlet text = typeof b.text === 'string' ? b.text.trim() : '';\nif (!html && !text) return fail('Send \"html\" or \"text\" (or both) with some content.');\nconst max = Number(s.max_body_chars) || 200000;\nif (html.length + text.length > max) return fail('The email body is longer than ' + max + ' characters.');\n// Always send both parts: plain text from the HTML, or simple HTML from the text.\nif (!text) text = html.replace(/<(style|script)[\\s\\S]*?<\\/\\1>/gi, '').replace(/<br\\s*\\/?>/gi, '\\n').replace(/<\\/(p|div|h[1-6]|li|tr)>/gi, '\\n').replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '\"').replace(/&amp;/g, '&').replace(/\\n{3,}/g, '\\n\\n').trim();\nif (!html) html = '<p>' + text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\\n/g, '<br>') + '</p>';\nreturn [{ json: { valid: true, dedupe_key: key, to, subject, html, text } }];"
+      }
+    },
+    {
+      "id": "q1-18",
+      "name": "Request Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        740,
+        -200
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "q1-19",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "q1-20",
+      "name": "Enqueue Once",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "onError": "continueErrorOutput",
+      "position": [
+        960,
+        -240
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM email_outbox_enqueue($1, $2, $3, $4, $5);",
+        "options": {
+          "queryReplacement": "={{ $json.dedupe_key }},{{ $json.to }},{{ $json.subject }},{{ $json.html }},{{ $json.text }}",
+          "connectionTimeout": 10
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "q1-24",
+      "name": "Enqueue Result",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1180,
+        -240
+      ],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "q1-21",
+                    "leftValue": "={{ $json.outcome }}",
+                    "rightValue": "queued",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Queued"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "q1-22",
+                    "leftValue": "={{ $json.outcome }}",
+                    "rightValue": "duplicate",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Duplicate"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "q1-23",
+                    "leftValue": "={{ $json.outcome }}",
+                    "rightValue": "suppressed",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Blocked"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "q1-25",
+      "name": "Respond Queued",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1400,
+        -300
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ queued: true, duplicate: false, id: Number($json.id), status: 'queued', dedupe_key: $('Validate Email Request').first().json.dedupe_key }) }}",
+        "options": {
+          "responseCode": 202
+        }
+      }
+    },
+    {
+      "id": "q1-26",
+      "name": "Respond Duplicate",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1400,
+        -170
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ queued: false, duplicate: true, id: Number($json.id), status: $json.status, attempts: $json.attempts, sent_at: $json.sent_at, same_content: $json.same_content, dedupe_key: $('Validate Email Request').first().json.dedupe_key }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "q1-27",
+      "name": "Respond Address Blocked",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1400,
+        -40
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ queued: false, suppressed: true, to: $('Validate Email Request').first().json.to, reason: $json.reason }) }}",
+        "options": {
+          "responseCode": 409
+        }
+      }
+    },
+    {
+      "id": "q1-28",
+      "name": "Respond Database Unavailable",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1180,
+        -60
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ queued: false, error: 'The email queue database is unavailable. Nothing was queued. Retry later with the same dedupe_key.' }) }}",
+        "options": {
+          "responseCode": 503
+        }
+      }
+    },
+    {
+      "id": "q1-29",
+      "name": "Respond Invalid Request",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        960,
+        -40
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ queued: false, error: $json.error }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      }
+    },
+    {
+      "id": "q1-30",
+      "name": "Mark Stuck and Blocked Emails",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        520,
+        400
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH stale AS (\n  UPDATE email_outbox\n  SET status = 'stuck', stuck_reported = true, updated_at = now(),\n      last_error = 'still sending after ' || $1 || ' minutes (n8n stopped mid-send?), not resent'\n  WHERE status = 'sending' AND claimed_at < now() - make_interval(mins => $1::int)\n  RETURNING id, dedupe_key, to_email, subject, last_error\n), unreported AS (\n  UPDATE email_outbox SET stuck_reported = true\n  WHERE status = 'stuck' AND NOT stuck_reported\n  RETURNING id, dedupe_key, to_email, subject, last_error\n), blocked AS (\n  UPDATE email_outbox o\n  SET status = 'failed', updated_at = now(), last_error = 'not sent: address is on the suppression list (' || left(s.reason, 200) || ')'\n  FROM email_suppression s\n  WHERE o.status IN ('queued', 'retry') AND s.email = o.to_email\n  RETURNING o.id\n), stuck AS (SELECT * FROM stale UNION ALL SELECT * FROM unreported)\nSELECT (SELECT count(*) FROM stuck)::int AS new_stuck,\n       (SELECT count(*) FROM blocked)::int AS suppressed_now,\n       coalesce((SELECT json_agg(stuck ORDER BY id) FROM stuck), '[]'::json) AS stuck_rows;",
+        "options": {
+          "queryReplacement": "={{ $('Outbox Settings').first().json.stuck_after_minutes }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "q1-31",
+      "name": "New Stuck Emails?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        740,
+        400
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "q1-32",
+              "leftValue": "={{ $json.new_stuck > 0 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "q1-33",
+      "name": "Alert Owner About Stuck Emails",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "onError": "continueErrorOutput",
+      "position": [
+        960,
+        340
+      ],
+      "parameters": {
+        "fromEmail": "={{ $('Outbox Settings').first().json.from_email }}",
+        "toEmail": "={{ $('Outbox Settings').first().json.owner_email }}",
+        "subject": "=[Email outbox] {{ $json.new_stuck }} email(s) stuck, not resent",
+        "emailFormat": "html",
+        "html": "=<p>{{ $json.new_stuck }} email(s) in the outbox have an unknown send outcome. They were <b>not</b> resent, to avoid duplicates.</p>\n<p>Check with each recipient or your SMTP provider's log. If an email never arrived, set its <code>status</code> back to <code>queued</code> in <code>email_outbox</code>.</p>\n<ul>{{ $json.stuck_rows.map((r) => '<li>#' + r.id + ' ' + String(r.dedupe_key ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + ' to ' + String(r.to_email ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + ': ' + String(r.last_error ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</li>').join('') }}</ul>",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "smtp": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "q1-34",
+      "name": "Claim Due Emails",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "executeOnce": true,
+      "position": [
+        1180,
+        420
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE email_outbox\nSET status = 'sending', claimed_at = now(), attempts = attempts + 1, updated_at = now()\nWHERE id IN (\n  SELECT id FROM email_outbox\n  WHERE status IN ('queued', 'retry') AND next_attempt_at <= now()\n  ORDER BY next_attempt_at, id\n  LIMIT $1::int\n  FOR UPDATE SKIP LOCKED\n) AND status IN ('queued', 'retry')\nRETURNING id, dedupe_key, to_email, subject, body_html, body_text, attempts;",
+        "options": {
+          "queryReplacement": "={{ $('Outbox Settings').first().json.batch_size }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "q1-35",
+      "name": "Any Emails Claimed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1400,
+        420
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "q1-36",
+              "leftValue": "={{ $json.id !== undefined }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "q1-37",
+      "name": "Send Queued Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "onError": "continueErrorOutput",
+      "position": [
+        1620,
+        420
+      ],
+      "parameters": {
+        "fromEmail": "={{ $('Outbox Settings').first().json.from_email }}",
+        "toEmail": "={{ $json.to_email }}",
+        "subject": "={{ $json.subject }}",
+        "emailFormat": "both",
+        "text": "={{ $json.body_text }}",
+        "html": "={{ $json.body_html }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "smtp": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "q1-38",
+      "name": "Mark Email Sent",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        1840,
+        340
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE email_outbox SET status = 'sent', sent_at = now(), updated_at = now(), last_error = NULL\nWHERE id = $1::bigint AND status IN ('sending', 'stuck')\nRETURNING id, dedupe_key, status;",
+        "options": {
+          "queryReplacement": "={{ $('Claim Due Emails').item.json.id }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "q1-39",
+      "name": "Classify SMTP Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1840,
+        560
+      ],
+      "parameters": {
+        "jsCode": "// Decide what an SMTP error means. Only errors where the server certainly did not take the email are retried.\nconst s = $('Outbox Settings').first().json;\nconst maxAttempts = Number(s.max_attempts) || 5;\nconst base = Number(s.retry_base_minutes) || 5;\nreturn $input.all().map((item, i) => {\n  const row = $('Claim Due Emails').itemMatching(i).json; // the claimed row this failed send belongs to (paired item)\n  const error = String(item.json.error?.message || item.json.error || item.json.message || 'Unknown SMTP error').slice(0, 500);\n  const m = error.match(/(?:^|:\\s)([45])(\\d\\d)[\\s-]/);\n  const code = m ? Number(m[1] + m[2]) : null;\n  // No connection, or no greeting yet: nothing can have been sent.\n  const refused = /ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|Greeting never received/i.test(error);\n  const loginFailed = [530, 534, 535].includes(code); // SMTP login refused: the email was never handed over\n  let status, suppress = false, delay = 0;\n  if ((code && code < 500) || loginFailed || (!code && refused)) {\n    status = row.attempts < maxAttempts ? 'retry' : 'failed';\n    delay = base * Math.pow(2, row.attempts - 1);\n  } else if (code) {\n    status = 'failed';\n    // Block the address only when the server says the mailbox or domain does not exist (enhanced code 5.1.0-5.1.6 or 5.1.10).\n    // Policy rejections such as \"550 5.7.1 Relaying denied\" or a blocklisted sender IP fail the email but block nothing.\n    suppress = [550, 551, 553].includes(code) && /recipient/i.test(error) && /\\b5\\.1\\.(?:[0-46]|10)\\b/.test(error);\n  } else {\n    status = 'stuck'; // timeout, dropped connection, TLS error...: the email may or may not have arrived\n  }\n  return { json: { id: row.id, status, suppress, retry_in_minutes: delay, error: (status === 'stuck' ? 'outcome unknown, not resent: ' : '') + error } };\n});"
+      }
+    },
+    {
+      "id": "q1-40",
+      "name": "Record Send Failure",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        2060,
+        560
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH u AS (\n  UPDATE email_outbox\n  SET status = $2, last_error = $3, updated_at = now(),\n      next_attempt_at = CASE WHEN $2 = 'retry' THEN now() + make_interval(mins => $4::int) ELSE next_attempt_at END,\n      stuck_reported = false\n  WHERE id = $1::bigint AND status IN ('sending', 'stuck')\n  RETURNING id, to_email, status, attempts, next_attempt_at\n), s AS (\n  INSERT INTO email_suppression (email, reason)\n  SELECT to_email, left($3, 300) FROM u WHERE $5 = 'true'\n  ON CONFLICT (email) DO NOTHING\n  RETURNING email\n)\nSELECT u.*, (SELECT count(*) FROM s)::int AS suppressed FROM u;",
+        "options": {
+          "queryReplacement": "={{ $json.id }},{{ $json.status }},{{ $json.error }},{{ $json.retry_in_minutes }},{{ $json.suppress }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "q1-41",
+      "name": "Count Last 24 Hours",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        520,
+        900
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  count(*) FILTER (WHERE status = 'sent' AND sent_at > now() - interval '24 hours')::int AS sent_24h,\n  count(*) FILTER (WHERE status = 'failed' AND updated_at > now() - interval '24 hours')::int AS failed_24h,\n  count(*) FILTER (WHERE status = 'stuck')::int AS stuck_total,\n  count(*) FILTER (WHERE status IN ('queued', 'retry'))::int AS waiting,\n  count(*) FILTER (WHERE status = 'retry')::int AS retrying,\n  (SELECT count(*) FROM email_suppression WHERE created_at > now() - interval '24 hours')::int AS suppressed_24h,\n  coalesce((SELECT json_agg(p) FROM (\n    SELECT id, dedupe_key, to_email, status, left(last_error, 200) AS last_error FROM email_outbox\n    WHERE status = 'stuck' OR (status = 'failed' AND updated_at > now() - interval '24 hours')\n    ORDER BY updated_at DESC LIMIT 20) p), '[]'::json) AS problems\nFROM email_outbox;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "q1-42",
+      "name": "Email Daily Summary",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        740,
+        900
+      ],
+      "parameters": {
+        "fromEmail": "={{ $('Outbox Settings').first().json.from_email }}",
+        "toEmail": "={{ $('Outbox Settings').first().json.owner_email }}",
+        "subject": "=[Email outbox] Daily summary: {{ $json.sent_24h }} sent, {{ $json.failed_24h }} failed, {{ $json.stuck_total }} stuck",
+        "emailFormat": "html",
+        "html": "=<p>Email outbox, last 24 hours:</p>\n<ul><li>Sent: {{ $json.sent_24h }}</li><li>Failed: {{ $json.failed_24h }}</li><li>Addresses newly blocked: {{ $json.suppressed_24h }}</li><li>Waiting to send: {{ $json.waiting }} ({{ $json.retrying }} retrying)</li><li>Stuck, need a check: {{ $json.stuck_total }}</li></ul>\n{{ $json.problems.length ? '<p>Stuck and failed emails (latest 20):</p><ul>' + $json.problems.map((r) => '<li>#' + r.id + ' [' + r.status + '] ' + String(r.dedupe_key ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + ' to ' + String(r.to_email ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + ': ' + String(r.last_error ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</li>').join('') + '</ul>' : '<p>No failed or stuck emails.</p>' }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "smtp": {
+          "name": "Your credential"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Run Once to Create Tables": {
+      "main": [
+        [
+          {
+            "node": "Create Outbox Tables",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enqueue Email Webhook": {
+      "main": [
+        [
+          {
+            "node": "Outbox Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every Minute": {
+      "main": [
+        [
+          {
+            "node": "Outbox Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Daily Summary at 8am": {
+      "main": [
+        [
+          {
+            "node": "Outbox Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Outbox Settings": {
+      "main": [
+        [
+          {
+            "node": "Which Trigger?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Which Trigger?": {
+      "main": [
+        [
+          {
+            "node": "Validate Email Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Stuck and Blocked Emails",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Count Last 24 Hours",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Email Request": {
+      "main": [
+        [
+          {
+            "node": "Request Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Request Valid?": {
+      "main": [
+        [
+          {
+            "node": "Enqueue Once",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Invalid Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enqueue Once": {
+      "main": [
+        [
+          {
+            "node": "Enqueue Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Database Unavailable",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enqueue Result": {
+      "main": [
+        [
+          {
+            "node": "Respond Queued",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Duplicate",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Address Blocked",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Stuck and Blocked Emails": {
+      "main": [
+        [
+          {
+            "node": "New Stuck Emails?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "New Stuck Emails?": {
+      "main": [
+        [
+          {
+            "node": "Alert Owner About Stuck Emails",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Claim Due Emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert Owner About Stuck Emails": {
+      "main": [
+        [
+          {
+            "node": "Claim Due Emails",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Claim Due Emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Due Emails": {
+      "main": [
+        [
+          {
+            "node": "Any Emails Claimed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Emails Claimed?": {
+      "main": [
+        [
+          {
+            "node": "Send Queued Email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Send Queued Email": {
+      "main": [
+        [
+          {
+            "node": "Mark Email Sent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Classify SMTP Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify SMTP Error": {
+      "main": [
+        [
+          {
+            "node": "Record Send Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Count Last 24 Hours": {
+      "main": [
+        [
+          {
+            "node": "Email Daily Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {}
+}

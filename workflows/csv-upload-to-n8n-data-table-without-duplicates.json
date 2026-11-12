@@ -1,0 +1,868 @@
+{
+  "name": "CSV Upload to n8n Data Table Without Duplicates",
+  "nodes": [
+    {
+      "id": "c6-1",
+      "name": "Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -900,
+        -360
+      ],
+      "parameters": {
+        "content": "## CSV import without duplicates\n\n### How it works\n1. **CSV Upload Form** (login required) takes one .csv file. Wrong types, empty and binary files get a clear page; nothing is written.\n2. **Read CSV Text** detects the encoding and removes a BOM. **Parse and Check Rows** detects comma, semicolon or tab, handles quotes and line endings, and matches headers to columns ignoring case and spaces.\n3. Each row is checked: value count, required columns, emails, numbers, true/false, dates and repeated keys. Unknown columns are listed on the result page.\n4. **Upsert Rows** inserts new keys and updates changed ones, so re-uploading a file adds nothing. Email keys match ignoring case and are saved in lowercase. Unchanged rows are skipped. Empty cells clear that column.\n5. Rejected rows are emailed to the owner as a CSV file. The page shows the counts and says if the email or a write failed.\n\n### Setup\n1. Create the data table first; its name must match exactly.\n2. Attach a Basic Auth credential to **CSV Upload Form** and an SMTP credential to **Email Rejected Rows**.\n3. In **Import Settings** set `data_table_name`, `key_column`, `required_columns`, `email_columns` (comma-separated), `date_formats` (Luxon formats, tried in order), `owner_email` and `from_email` (an address your SMTP account may send from).\n4. Set Workflow settings > Timezone; dates are read in it.\n5. Activate the workflow and share the Production URL from **CSV Upload Form**.\n\nRun one upload at a time: two uploads running together can add the same key twice. Writing takes about 30 ms per row. If it fails part-way, saved rows stay; upload the same file again.\n\n### Customization\nChange `date_formats` to `M/d/yyyy` for US-style dates.",
+        "width": 560,
+        "height": 1000
+      }
+    },
+    {
+      "id": "c6-2",
+      "name": "Upload Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -320,
+        -360
+      ],
+      "parameters": {
+        "content": "## Receive the file\nLogin-protected form, settings, and a check that the upload is a non-empty CSV text file.",
+        "width": 900,
+        "height": 440,
+        "color": 7
+      }
+    },
+    {
+      "id": "c6-3",
+      "name": "Check Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        600,
+        -360
+      ],
+      "parameters": {
+        "content": "## Find the table and check rows\nFinds the table by its exact name, loads its columns and rows, then parses and checks the CSV. Missing tables and unusable files stop here with nothing written.",
+        "width": 1340,
+        "height": 440,
+        "color": 7
+      }
+    },
+    {
+      "id": "c6-4",
+      "name": "Write Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        600,
+        120
+      ],
+      "parameters": {
+        "content": "## Write and report\nUpserts new and changed rows by the key column, emails rejected rows as a CSV attachment and shows the counts.",
+        "width": 2120,
+        "height": 480,
+        "color": 7
+      }
+    },
+    {
+      "id": "c6-5",
+      "name": "CSV Upload Form",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.3,
+      "position": [
+        -260,
+        -200
+      ],
+      "parameters": {
+        "authentication": "basicAuth",
+        "formTitle": "Import a CSV into the data table",
+        "formDescription": "Upload a .csv file. New rows are added, existing rows (matched by the key column) are updated, and uploading the same file again adds no duplicates.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "CSV file",
+              "fieldType": "file",
+              "multipleFiles": false,
+              "acceptFileTypes": ".csv",
+              "requiredField": true
+            }
+          ]
+        },
+        "options": {
+          "appendAttribution": false,
+          "path": "csv-to-data-table",
+          "buttonLabel": "Import"
+        }
+      },
+      "credentials": {
+        "httpBasicAuth": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "c6-6",
+      "name": "Import Settings",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -40,
+        -200
+      ],
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": true,
+        "include": "all",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "s1",
+              "name": "data_table_name",
+              "type": "string",
+              "value": "csv_import_contacts"
+            },
+            {
+              "id": "s2",
+              "name": "key_column",
+              "type": "string",
+              "value": "email"
+            },
+            {
+              "id": "s3",
+              "name": "required_columns",
+              "type": "string",
+              "value": "email, full_name"
+            },
+            {
+              "id": "s4",
+              "name": "email_columns",
+              "type": "string",
+              "value": "email"
+            },
+            {
+              "id": "s5",
+              "name": "date_formats",
+              "type": "string",
+              "value": "yyyy-MM-dd, dd/MM/yyyy"
+            },
+            {
+              "id": "s6",
+              "name": "owner_email",
+              "type": "string",
+              "value": "owner@example.com"
+            },
+            {
+              "id": "s7",
+              "name": "from_email",
+              "type": "string",
+              "value": "CSV Import <imports@example.com>"
+            }
+          ]
+        },
+        "options": {
+          "stripBinary": false
+        }
+      }
+    },
+    {
+      "id": "c6-7",
+      "name": "Check Uploaded File",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        180,
+        -200
+      ],
+      "parameters": {
+        "jsCode": "// Make sure one CSV text file arrived, and pass it on as \"data\" for Read CSV Text.\nconst item = $input.first();\nconst fail = (error) => [{ json: { ok: false, error } }];\nconst files = Object.entries(item.binary || {});\nif (!files.length) return fail('No file was uploaded. Please choose a CSV file.');\nconst [prop, file] = files[0];\nconst name = String(file.fileName || 'upload');\nif (!/\\.csv$/i.test(name)) return fail('\"' + name + '\" is not a CSV file. Please upload a .csv file (in Excel use File > Save As > CSV UTF-8).');\nconst buf = await this.helpers.getBinaryDataBuffer(0, prop);\nif (!buf.length) return fail('\"' + name + '\" is empty, so nothing was imported.');\nif (buf.includes(0)) return fail('\"' + name + '\" is not a text file (it may be an Excel workbook renamed to .csv). Save it as CSV UTF-8 and upload it again.');\nreturn [{ json: { ok: true, file_name: name }, binary: { data: file } }];"
+      }
+    },
+    {
+      "id": "c6-8",
+      "name": "File OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        400,
+        -200
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c6-9",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "c6-10",
+      "name": "Upload Problem",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.3,
+      "position": [
+        400,
+        -20
+      ],
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "text",
+        "completionTitle": "Nothing was imported",
+        "completionMessage": "={{ $json.error }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "c6-11",
+      "name": "Read CSV Text",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        660,
+        -200
+      ],
+      "parameters": {
+        "operation": "text",
+        "binaryPropertyName": "data",
+        "destinationKey": "data",
+        "options": {
+          "stripBOM": true
+        }
+      }
+    },
+    {
+      "id": "c6-12",
+      "name": "Find Data Table",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "position": [
+        880,
+        -200
+      ],
+      "parameters": {
+        "resource": "table",
+        "operation": "list",
+        "returnAll": true,
+        "options": {
+          "filterName": "={{ $('Import Settings').first().json.data_table_name.trim() }}"
+        }
+      }
+    },
+    {
+      "id": "c6-13",
+      "name": "Table Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1100,
+        -200
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c6-14",
+              "leftValue": "={{ $('Find Data Table').all().some((t) => t.json.name === $('Import Settings').first().json.data_table_name.trim()) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "c6-15",
+      "name": "Table Not Found",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.3,
+      "position": [
+        1100,
+        -20
+      ],
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "text",
+        "completionTitle": "Data table not found",
+        "completionMessage": "=There is no data table called \"{{ $('Import Settings').first().json.data_table_name.trim() }}\". Create it first or fix data_table_name in Import Settings. Nothing was imported.",
+        "options": {}
+      }
+    },
+    {
+      "id": "c6-16",
+      "name": "Load Existing Rows",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "position": [
+        1320,
+        -200
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Data Table').all().find((t) => t.json.name === $('Import Settings').first().json.data_table_name.trim()).json.id }}"
+        },
+        "returnAll": true,
+        "filters": {}
+      }
+    },
+    {
+      "id": "c6-17",
+      "name": "Parse and Check Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "executeOnce": true,
+      "position": [
+        1540,
+        -200
+      ],
+      "parameters": {
+        "jsCode": "// Parse the CSV, match its headers to the data table, check every row and work out what to write.\nconst s = $('Import Settings').first().json;\nconst fileName = $('Check Uploaded File').first().json.file_name;\nconst text = String($('Read CSV Text').first().json.data ?? '').replace(/^\\uFEFF/, '');\nconst tableName = String(s.data_table_name).trim();\nconst table = $('Find Data Table').all().map((i) => i.json).find((t) => t.name === tableName);\nconst existing = $('Load Existing Rows').all().map((i) => i.json).filter((r) => r.id !== undefined);\nconst zone = $now.zoneName;\nconst stop = (error) => [{ json: { ok: false, error } }];\nconst norm = (h) => String(h ?? '').replace(/^\\uFEFF/, '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');\nconst list = (v) => [...new Set(String(v ?? '').split(',').map(norm).filter(Boolean))];\nif (!table) return stop('The data table \"' + tableName + '\" was not found.');\nif (text.includes('\\uFFFD')) return stop('Some characters in the file could not be read. In Excel use File > Save As > CSV UTF-8, then upload it again.');\n\n// Delimiter: the most common of comma, semicolon and tab in the header line (outside quotes).\nconst firstLine = text.split(/\\r\\n|\\n|\\r/)[0] || '';\nconst count = (ch) => { let k = 0, q = false; for (const c of firstLine) { if (c === '\"') q = !q; else if (!q && c === ch) k++; } return k; };\nconst delim = [',', ';', '\\t'].map((d) => [d, count(d)]).sort((a, b) => b[1] - a[1])[0][0];\n\n// Split into records: quotes, \"\" escapes, line breaks inside quotes, CRLF, LF or CR.\nconst records = []; let row = [], cell = '', q = false;\nfor (let i = 0; i < text.length; i++) {\n  const c = text[i];\n  if (q) { if (c === '\"') { if (text[i + 1] === '\"') { cell += '\"'; i++; } else q = false; } else cell += c; continue; }\n  if (c === '\"') q = true;\n  else if (c === delim) { row.push(cell); cell = ''; }\n  else if (c === '\\r' || c === '\\n') { if (c === '\\r' && text[i + 1] === '\\n') i++; row.push(cell); records.push(row); row = []; cell = ''; }\n  else cell += c;\n}\nif (q) return stop('A quoted value is never closed, so the file cannot be read safely. Nothing was imported.');\nif (cell !== '' || row.length) { row.push(cell); records.push(row); }\nconst rows = records.map((cells, i) => ({ n: i + 1, cells })).filter((r) => r.cells.some((v) => v.trim() !== ''));\nif (!rows.length) return stop('The file has no rows, so nothing was imported.');\nif (rows.length === 1) return stop('The file only has a header row, so nothing was imported.');\n\n// Match headers to table columns.\nconst cols = new Map(table.columns.map((c) => [norm(c.name), c]));\nconst origHeader = rows[0].cells.map((h) => h.trim());\nconst header = origHeader.map(norm);\nconst dup = header.filter((h, i) => h && header.indexOf(h) !== i);\nif (dup.length) return stop('These columns appear more than once in the file: ' + [...new Set(dup)].join(', ') + '. Nothing was imported.');\nconst keyCol = cols.get(norm(s.key_column));\nif (!keyCol) return stop('The key column \"' + s.key_column + '\" is not a column of the data table \"' + table.name + '\". Check Import Settings.');\nconst required = [...new Set([norm(keyCol.name), ...list(s.required_columns)])];\nconst badReq = required.filter((r) => !cols.has(r));\nif (badReq.length) return stop('These required columns are not in the data table: ' + badReq.join(', ') + '. Check Import Settings.');\nconst missing = required.filter((r) => !header.includes(r)).map((r) => cols.get(r).name);\nif (missing.length) return stop('The file is missing these required columns: ' + missing.join(', ') + '. Nothing was imported.');\nconst unknown = origHeader.filter((h, i) => header[i] && !cols.has(header[i]));\nconst mapped = header.map((h) => (h ? cols.get(h) || null : null));\n\n// Convert one cell to the column's type.\nconst emailCols = new Set(list(s.email_columns));\nconst formats = String(s.date_formats || 'yyyy-MM-dd').split(',').map((f) => f.trim()).filter(Boolean);\nconst convert = (col, raw) => {\n  const v = String(raw ?? '').trim();\n  if (v === '') return { value: null };\n  if (emailCols.has(norm(col.name))) { const e = v.toLowerCase(); return /^[^\\s@,;]+@[^\\s@,;]+\\.[^\\s@,;]+$/.test(e) ? { value: e } : { error: '\"' + v + '\" is not a valid email' }; }\n  if (col.type === 'number') {\n    let t = v.replace(/\\s/g, '');\n    if (delim === ';' && /^[-+]?\\d+,\\d+$/.test(t)) t = t.replace(',', '.');\n    else if (/^[-+]?\\d{1,3}(,\\d{3})+(\\.\\d+)?$/.test(t)) t = t.replace(/,/g, '');\n    return /^[-+]?(\\d+\\.?\\d*|\\.\\d+)$/.test(t) ? { value: Number(t) } : { error: '\"' + v + '\" is not a number' };\n  }\n  if (col.type === 'boolean') {\n    const b = v.toLowerCase();\n    if (['true', 'yes', 'y', '1'].includes(b)) return { value: true };\n    if (['false', 'no', 'n', '0'].includes(b)) return { value: false };\n    return { error: '\"' + v + '\" is not true or false' };\n  }\n  if (col.type === 'date') {\n    for (const f of formats) { const d = DateTime.fromFormat(v, f, { zone }); if (d.isValid) return { value: d.toUTC().toISO() }; }\n    const d = DateTime.fromISO(v, { zone });\n    return d.isValid ? { value: d.toUTC().toISO() } : { error: '\"' + v + '\" is not a date in the format ' + formats.join(' or ') };\n  }\n  return { value: v };\n};\nconst same = (col, a, b) => {\n  const empty = (x) => x === null || x === undefined || x === '';\n  if (empty(a) || empty(b)) return empty(a) && empty(b);\n  if (col.type === 'date') return new Date(a).getTime() === new Date(b).getTime();\n  if (col.type === 'number') return Number(a) === Number(b);\n  if (col.type === 'boolean') return Boolean(a) === Boolean(b);\n  return String(a) === String(b);\n};\n\n// Existing rows by key, then check and classify every data row.\n// Email keys match ignoring case; the stored spelling is kept as the match value so the row is updated, not duplicated.\nconst keyIsEmail = emailCols.has(norm(keyCol.name));\nconst keyOf = (v) => (keyIsEmail ? String(v).trim().toLowerCase() : String(v));\nconst byKey = new Map();\nfor (const r of existing) { const k = r[keyCol.name]; if (k !== null && k !== undefined && !byKey.has(keyOf(k))) byKey.set(keyOf(k), r); }\nconst csvName = origHeader.map((h, i) => (h || 'column_' + (i + 1)));\nconst rejected = [], toWrite = [], matchKeys = [], seen = new Map();\nlet inserts = 0, updates = 0, unchanged = 0;\nfor (const r of rows.slice(1)) {\n  const reasons = [], out = {};\n  if (r.cells.length < header.length || (r.cells.length > header.length && r.cells.slice(header.length).some((v) => v.trim() !== ''))) reasons.push('has ' + r.cells.length + ' values but the header has ' + header.length + ' columns');\n  mapped.forEach((col, i) => { if (!col) return; const c = convert(col, r.cells[i]); if (c.error) reasons.push(col.name + ': ' + c.error); else out[col.name] = c.value; });\n  for (const req of required) { const col = cols.get(req); if (out[col.name] === null) reasons.push(col.name + ' is empty'); }\n  const k = keyOf(out[keyCol.name]);\n  if (!reasons.length && seen.has(k)) reasons.push('same ' + keyCol.name + ' as row ' + seen.get(k));\n  if (reasons.length) {\n    const rec = { csv_row: r.n, rejected_reason: reasons.join('; ') };\n    csvName.forEach((h, i) => { rec[h] = r.cells[i] ?? ''; });\n    rejected.push(rec); continue;\n  }\n  seen.set(k, r.n);\n  const old = byKey.get(k);\n  if (!old) { inserts++; toWrite.push(out); matchKeys.push(out[keyCol.name]); }\n  else if (Object.keys(out).every((c) => same(cols.get(norm(c)), out[c], old[c]))) unchanged++;\n  else { updates++; toWrite.push(out); matchKeys.push(old[keyCol.name]); }\n}\nreturn [{ json: { ok: true, table: table.name, key_column: keyCol.name, file_name: fileName, delimiter: delim === '\\t' ? 'tab' : delim, total: rows.length - 1, inserts, updates, unchanged, rejected_count: rejected.length, unknown_columns: unknown, to_write: toWrite, match_keys: matchKeys, rejected } }];"
+      }
+    },
+    {
+      "id": "c6-18",
+      "name": "File Usable?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1760,
+        -200
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c6-19",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "c6-20",
+      "name": "Nothing Imported",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.3,
+      "position": [
+        1760,
+        -20
+      ],
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "text",
+        "completionTitle": "Nothing was imported",
+        "completionMessage": "={{ $json.error }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "c6-21",
+      "name": "Rows to Write?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        680,
+        340
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c6-22",
+              "leftValue": "={{ $json.to_write.length > 0 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "c6-23",
+      "name": "One Item per Row",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        900,
+        320
+      ],
+      "parameters": {
+        "fieldToSplitOut": "to_write",
+        "include": "noOtherFields",
+        "options": {}
+      }
+    },
+    {
+      "id": "c6-24",
+      "name": "Upsert Rows",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "onError": "continueRegularOutput",
+      "position": [
+        1120,
+        320
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "upsert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Data Table').all().find((t) => t.json.name === $('Import Settings').first().json.data_table_name.trim()).json.id }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "={{ $('Parse and Check Rows').first().json.key_column }}",
+              "condition": "eq",
+              "keyValue": "={{ $('Parse and Check Rows').first().json.match_keys[$itemIndex] }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "c6-25",
+      "name": "Summarize Import",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "executeOnce": true,
+      "position": [
+        1340,
+        340
+      ],
+      "parameters": {
+        "jsCode": "// Count what was written and build the result page text and the owner email.\nconst p = $('Parse and Check Rows').first().json;\nconst s = $('Import Settings').first().json;\nconst esc = (v) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;');\nconst wrote = $('Upsert Rows').isExecuted ? $('Upsert Rows').all().map((i) => i.json) : [];\nconst written = wrote.filter((r) => r.id !== undefined && r.id !== null).length;\nconst writeFailed = p.to_write.length > 0 && written < p.to_write.length;\nconst counts = p.inserts + ' inserted, ' + p.updates + ' updated, ' + p.unchanged + ' unchanged, ' + p.rejected_count + ' rejected';\nlet page = (writeFailed ? 'Writing to the data table failed, so some or all rows were not saved. Open this execution in n8n to see the error, then upload the same file again. Planned: ' : '') + counts + ' (' + p.total + (p.total === 1 ? ' row' : ' rows') + ' in ' + p.file_name + ', table ' + p.table + ').';\nif (p.unknown_columns.length) page += ' These columns are not in the table and were ignored: ' + p.unknown_columns.join(', ') + '.';\nconst reasons = p.rejected.slice(0, 10).map((r) => '<li>Row ' + r.csv_row + ': ' + esc(r.rejected_reason) + '</li>').join('');\nconst html = '<p>' + p.rejected_count + ' of ' + p.total + ' rows in <b>' + esc(p.file_name) + '</b> were not imported into the data table <b>' + esc(p.table) + '</b>. The attached rejected-rows.csv lists each one with the reason. Fix them and upload the file again; rows already imported are not duplicated.</p>'\n  + '<p>Result: ' + esc(counts) + '.' + (writeFailed ? ' <b>Writing to the data table failed</b>, so some or all valid rows were not saved either. Open this execution in n8n to see the error.' : '') + '</p>'\n  + (p.unknown_columns.length ? '<p>Ignored columns (not in the table): ' + esc(p.unknown_columns.join(', ')) + '</p>' : '')\n  + '<ul>' + reasons + '</ul>' + (p.rejected_count > 10 ? '<p>The first 10 reasons are shown; the attachment has all of them.</p>' : '');\nreturn [{ json: { ...p, to_write: undefined, match_keys: undefined, written, write_failed: writeFailed, page_message: page, email_html: html, owner_email: s.owner_email } }];"
+      }
+    },
+    {
+      "id": "c6-26",
+      "name": "Any Rejected Rows?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1560,
+        340
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c6-27",
+              "leftValue": "={{ $json.rejected_count > 0 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "c6-28",
+      "name": "One Item per Rejected Row",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        1780,
+        240
+      ],
+      "parameters": {
+        "fieldToSplitOut": "rejected",
+        "include": "noOtherFields",
+        "options": {}
+      }
+    },
+    {
+      "id": "c6-29",
+      "name": "Build Rejected Rows CSV",
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        2000,
+        240
+      ],
+      "parameters": {
+        "operation": "csv",
+        "binaryPropertyName": "data",
+        "options": {
+          "fileName": "rejected-rows.csv"
+        }
+      }
+    },
+    {
+      "id": "c6-30",
+      "name": "Email Rejected Rows",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "onError": "continueErrorOutput",
+      "position": [
+        2220,
+        240
+      ],
+      "parameters": {
+        "fromEmail": "={{ $('Import Settings').first().json.from_email }}",
+        "toEmail": "={{ $('Import Settings').first().json.owner_email }}",
+        "subject": "={{ $('Summarize Import').first().json.rejected_count }} rows rejected from {{ $('Summarize Import').first().json.file_name }}",
+        "emailFormat": "html",
+        "html": "={{ $('Summarize Import').first().json.email_html }}",
+        "options": {
+          "appendAttribution": false,
+          "attachments": "data"
+        }
+      },
+      "credentials": {
+        "smtp": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "c6-31",
+      "name": "Import Finished",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.3,
+      "executeOnce": true,
+      "position": [
+        2480,
+        420
+      ],
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "text",
+        "completionTitle": "Import finished",
+        "completionMessage": "={{ $('Summarize Import').first().json.page_message }}{{ !$('Email Rejected Rows').isExecuted ? '' : ($json.accepted !== undefined ? ' The rejected rows were emailed to ' + $('Import Settings').first().json.owner_email + '.' : ' The rejected-rows email could not be sent, so please fix the rejected rows from your own copy of the file.') }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "CSV Upload Form": {
+      "main": [
+        [
+          {
+            "node": "Import Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Import Settings": {
+      "main": [
+        [
+          {
+            "node": "Check Uploaded File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Uploaded File": {
+      "main": [
+        [
+          {
+            "node": "File OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "File OK?": {
+      "main": [
+        [
+          {
+            "node": "Read CSV Text",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Upload Problem",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read CSV Text": {
+      "main": [
+        [
+          {
+            "node": "Find Data Table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Data Table": {
+      "main": [
+        [
+          {
+            "node": "Table Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Table Found?": {
+      "main": [
+        [
+          {
+            "node": "Load Existing Rows",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Table Not Found",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Existing Rows": {
+      "main": [
+        [
+          {
+            "node": "Parse and Check Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse and Check Rows": {
+      "main": [
+        [
+          {
+            "node": "File Usable?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "File Usable?": {
+      "main": [
+        [
+          {
+            "node": "Rows to Write?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Nothing Imported",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rows to Write?": {
+      "main": [
+        [
+          {
+            "node": "One Item per Row",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Summarize Import",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "One Item per Row": {
+      "main": [
+        [
+          {
+            "node": "Upsert Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Rows": {
+      "main": [
+        [
+          {
+            "node": "Summarize Import",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Summarize Import": {
+      "main": [
+        [
+          {
+            "node": "Any Rejected Rows?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Rejected Rows?": {
+      "main": [
+        [
+          {
+            "node": "One Item per Rejected Row",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Import Finished",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "One Item per Rejected Row": {
+      "main": [
+        [
+          {
+            "node": "Build Rejected Rows CSV",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Rejected Rows CSV": {
+      "main": [
+        [
+          {
+            "node": "Email Rejected Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Rejected Rows": {
+      "main": [
+        [
+          {
+            "node": "Import Finished",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Import Finished",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {}
+}

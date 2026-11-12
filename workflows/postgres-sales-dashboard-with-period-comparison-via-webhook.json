@@ -1,0 +1,791 @@
+{
+  "name": "Postgres Sales Dashboard with Period Comparison via Webhook",
+  "nodes": [
+    {
+      "id": "d2-1",
+      "name": "Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1000,
+        -440
+      ],
+      "parameters": {
+        "content": "## Postgres sales dashboard\n\n### How it works\n1. Open the webhook URL and log in. Filter by `from`, `to` (YYYY-MM-DD) and customer; `format=csv` downloads daily totals.\n2. **Validate Request** reads dates in the workflow timezone. Bad dates, reversed or too long ranges and unknown formats get a 400 page.\n3. **Load Sales Metrics** aggregates in one SQL query (revenue, orders, average order value, change vs the previous equal-length period and vs last year, top customers and products, daily totals), so raw rows never reach n8n.\n4. **Build Report** renders the page with a bar chart and no external scripts. Unknown customers get a 400 page, empty periods say so, database errors get a 503 page.\n5. Every Monday at 08:00 the last 7 days are emailed.\n\n### Setup\n1. Add credentials: Basic Auth on **Sales Dashboard Webhook**, Postgres on the three Postgres nodes, SMTP on **Send Weekly Report Email**.\n2. Run **Run Once to Create Tables** once (needs CREATE permission). It creates `sales_orders` and `sales_order_items`, and adds about 100,000 demo orders only while `sales_orders` is empty. For existing tables, skip it and create views matching **Create Sales Tables**.\n3. In **Dashboard Settings** set `dashboard_title`, `currency`, `default_days`, `max_days`, `top_n`, `report_email` and `from_email` (a sender your SMTP server accepts).\n4. Set your timezone in Workflow settings, activate, and open the Production URL of **Sales Dashboard Webhook**.\n\nA failed weekly query or email fails the execution, so set an Error Workflow.\n\n### Customization\nChange the day and hour in **Weekly Report Schedule**. Remove demo data with `TRUNCATE sales_orders CASCADE`.",
+        "width": 600,
+        "height": 1180
+      }
+    },
+    {
+      "id": "d2-2",
+      "name": "Setup Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -360,
+        -440
+      ],
+      "parameters": {
+        "content": "## One-time setup\nCreates the two tables and indexes, then adds demo orders only while `sales_orders` is empty.",
+        "width": 760,
+        "height": 260,
+        "color": 7
+      }
+    },
+    {
+      "id": "d2-3",
+      "name": "Request Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -360,
+        -140
+      ],
+      "parameters": {
+        "content": "## Read and check the request\nThe browser link and the Monday schedule share one settings node. Bad dates, a reversed or too long range and an unknown format get a 400 page.",
+        "width": 1160,
+        "height": 520,
+        "color": 7
+      }
+    },
+    {
+      "id": "d2-4",
+      "name": "Query Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        840,
+        -140
+      ],
+      "parameters": {
+        "content": "## Aggregate in Postgres\nOne query returns the totals, comparisons, top lists and daily series. If the database fails, the browser gets a 503 page and the weekly run fails.",
+        "width": 520,
+        "height": 880,
+        "color": 7
+      }
+    },
+    {
+      "id": "d2-5",
+      "name": "Output Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1400,
+        -140
+      ],
+      "parameters": {
+        "content": "## Page, CSV or email\nUnknown customers get a 400 page. A failed weekly email fails the execution.",
+        "width": 940,
+        "height": 880,
+        "color": 7
+      }
+    },
+    {
+      "id": "d2-6",
+      "name": "Run Once to Create Tables",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -300,
+        -300
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "d2-7",
+      "name": "Create Sales Tables",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        -60,
+        -300
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Expected schema. Totals are in one currency.\nCREATE TABLE IF NOT EXISTS sales_orders (\n  id bigserial PRIMARY KEY,\n  customer text NOT NULL,\n  ordered_at timestamptz NOT NULL,\n  total numeric(12,2) NOT NULL DEFAULT 0\n);\nCREATE TABLE IF NOT EXISTS sales_order_items (\n  id bigserial PRIMARY KEY,\n  order_id bigint NOT NULL REFERENCES sales_orders(id) ON DELETE CASCADE,\n  product text NOT NULL,\n  qty integer NOT NULL,\n  amount numeric(12,2) NOT NULL\n);\nCREATE INDEX IF NOT EXISTS sales_orders_ordered_at ON sales_orders (ordered_at);\nCREATE INDEX IF NOT EXISTS sales_orders_customer ON sales_orders (lower(customer), ordered_at);\nCREATE INDEX IF NOT EXISTS sales_order_items_order ON sales_order_items (order_id);\nSELECT 'tables ready' AS status;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "d2-8",
+      "name": "Add Demo Orders If Empty",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        180,
+        -300
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- DEMO DATA, optional. Runs only while sales_orders is empty, so it never mixes with real orders.\nINSERT INTO sales_orders (customer, ordered_at, total)\nSELECT 'Demo Customer ' || lpad((1 + floor(random() * 60))::int::text, 2, '0'),\n       now() - power(random(), 1.3) * interval '800 days', 0\nFROM generate_series(1, 100000)\nWHERE NOT EXISTS (SELECT 1 FROM sales_orders);\nINSERT INTO sales_order_items (order_id, product, qty, amount)\nSELECT order_id, product, qty, round((qty * price)::numeric, 2)\nFROM (\n  SELECT o.id AS order_id, 'Demo Product ' || chr(65 + floor(random() * 12)::int) AS product,\n         1 + floor(random() * 4)::int AS qty, 5 + random() * 95 AS price\n  FROM sales_orders o CROSS JOIN LATERAL generate_series(1, 1 + (o.id % 3)::int) g\n  WHERE o.customer LIKE 'Demo Customer %' AND o.total = 0\n    AND NOT EXISTS (SELECT 1 FROM sales_order_items i WHERE i.order_id = o.id)\n) x;\nUPDATE sales_orders o SET total = s.amount\nFROM (SELECT order_id, sum(amount) AS amount FROM sales_order_items GROUP BY order_id) s\nWHERE s.order_id = o.id AND o.total = 0 AND o.customer LIKE 'Demo Customer %';\nANALYZE sales_orders; ANALYZE sales_order_items;\nSELECT count(*) AS demo_orders FROM sales_orders WHERE customer LIKE 'Demo Customer %';",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "d2-9",
+      "name": "Sales Dashboard Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -300,
+        0
+      ],
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "sales-dashboard",
+        "authentication": "basicAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "credentials": {
+        "httpBasicAuth": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "d2-10",
+      "name": "Weekly Report Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -300,
+        200
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "weeksInterval": 1,
+              "triggerAtDay": [
+                1
+              ],
+              "triggerAtHour": 8,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "d2-11",
+      "name": "Dashboard Settings",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -60,
+        100
+      ],
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "k1",
+              "name": "dashboard_title",
+              "type": "string",
+              "value": "Sales dashboard"
+            },
+            {
+              "id": "k2",
+              "name": "currency",
+              "type": "string",
+              "value": "USD"
+            },
+            {
+              "id": "k3",
+              "name": "default_days",
+              "type": "number",
+              "value": 30
+            },
+            {
+              "id": "k4",
+              "name": "max_days",
+              "type": "number",
+              "value": 366
+            },
+            {
+              "id": "k5",
+              "name": "top_n",
+              "type": "number",
+              "value": 10
+            },
+            {
+              "id": "k6",
+              "name": "report_email",
+              "type": "string",
+              "value": "sales-report@example.com"
+            },
+            {
+              "id": "k7",
+              "name": "from_email",
+              "type": "string",
+              "value": "Sales Reports <reports@example.com>"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "d2-12",
+      "name": "Validate Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        180,
+        100
+      ],
+      "parameters": {
+        "jsCode": "// Check the query string and work out the three periods. Dates are calendar days in the workflow timezone.\nconst esc = (v) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;').replace(/'/g, '&#39;');\nconst page = (title, body) => '<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>' + esc(title) + '</title><style>'\n  + 'body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:0;background:#f5f6f8;color:#1f2933}main{max-width:1000px;margin:0 auto;padding:24px}'\n  + 'h1{font-size:24px;margin:0 0 4px}h2{font-size:17px;margin:28px 0 8px}.muted{color:#616e7c}.box{background:#fff;border:1px solid #e1e4e8;border-radius:8px;padding:16px}'\n  + 'form{display:flex;flex-wrap:wrap;gap:10px;align-items:end;margin:16px 0}label{font-size:13px;display:flex;flex-direction:column;gap:4px}input{padding:6px 8px;border:1px solid #c5ccd3;border-radius:6px;font:inherit}'\n  + 'button{padding:7px 14px;border:0;border-radius:6px;background:#1f6feb;color:#fff;font:inherit;cursor:pointer}.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}'\n  + '.tile .v{font-size:26px;font-weight:600;margin:4px 0}.up{color:#1a7f37}.down{color:#cf222e}table{width:100%;border-collapse:collapse;background:#fff}th,td{text-align:left;padding:7px 10px;border-bottom:1px solid #e1e4e8;font-size:14px}'\n  + 'td.n,th.n{text-align:right}.notice{background:#fff8c5;border:1px solid #d4a72c;border-radius:8px;padding:14px}.error{background:#ffebe9;border:1px solid #cf222e;border-radius:8px;padding:14px}svg{width:100%;height:auto}'\n  + '</style></head><body><main>' + body + '</main></body></html>';\nconst filterForm = (f) => '<form method=\"get\"><label>From<input type=\"date\" name=\"from\" value=\"' + esc(f.from) + '\"></label><label>To<input type=\"date\" name=\"to\" value=\"' + esc(f.to) + '\"></label>'\n  + '<label>Customer (optional)<input type=\"text\" name=\"customer\" value=\"' + esc(f.customer) + '\" placeholder=\"All customers\"></label><button type=\"submit\">Show</button></form>';\nconst s = $input.first().json;\nconst zone = $now.zoneName;\nconst scheduled = !$('Sales Dashboard Webhook').isExecuted;\nconst currency = String(s.currency || '').trim().toUpperCase();\ntry { new Intl.NumberFormat('en-US', { style: 'currency', currency }); } catch (e) { throw new Error('Dashboard Settings: currency must be a 3-letter ISO code such as USD'); }\nconst defaultDays = Math.floor(Number(s.default_days)), maxDays = Math.floor(Number(s.max_days)), topN = Math.floor(Number(s.top_n));\nif (!(defaultDays >= 1) || !(maxDays >= defaultDays) || !(topN >= 1 && topN <= 100)) throw new Error('Dashboard Settings: default_days must be 1 or more, max_days at least default_days, top_n between 1 and 100');\nconst q = scheduled ? {} : ($('Sales Dashboard Webhook').first().json.query || {});\nconst fail = (error, f) => [{ json: { valid: false, source: 'webhook', status_code: 400, error,\n  html: page('Cannot show the dashboard', '<h1>' + esc(s.dashboard_title) + '</h1>' + filterForm(f) + '<div class=\"error\"><b>Cannot show the dashboard.</b> ' + esc(error) + '</div>') } }];\nconst raw = {};\nfor (const k of ['from', 'to', 'customer', 'format']) {\n  const v = q[k];\n  if (Array.isArray(v) || (v !== undefined && v !== null && typeof v === 'object')) return fail('\"' + k + '\" was given more than once.', {});\n  raw[k] = v === undefined || v === null ? '' : String(v).trim();\n}\nconst today = $now.setZone(zone).startOf('day');\nconst parse = (str) => { if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(str)) return null; const d = DateTime.fromISO(str, { zone }); return d.isValid ? d.startOf('day') : null; };\nlet from, to;\nif (scheduled) { to = today.minus({ days: 1 }); from = to.minus({ days: 6 }); }\nelse {\n  if (raw.from && !parse(raw.from)) return fail('\"from\" must be a real date written as YYYY-MM-DD.', raw);\n  if (raw.to && !parse(raw.to)) return fail('\"to\" must be a real date written as YYYY-MM-DD.', raw);\n  to = raw.to ? parse(raw.to) : today;\n  from = raw.from ? parse(raw.from) : to.minus({ days: defaultDays - 1 });\n  if (from > to) return fail('\"from\" (' + raw.from + ') is after \"to\" (' + to.toISODate() + ').', raw);\n}\nconst days = Math.round(to.diff(from, 'days').days) + 1;\nif (days > maxDays) return fail('The period has ' + days + ' days. The longest allowed period is ' + maxDays + ' days.', raw);\nif (raw.customer.length > 200) return fail('\"customer\" is longer than 200 characters.', raw);\nconst format = raw.format.toLowerCase() || 'html';\nif (!['html', 'csv'].includes(format)) return fail('\"format\" must be html or csv.', raw);\nconst end = to.plus({ days: 1 });\nconst prevFrom = from.minus({ days }), lyFrom = from.minus({ years: 1 }), lyTo = end.minus({ years: 1 });\nconst label = (a, b) => a.toFormat('d LLL yyyy') + ' to ' + b.toFormat('d LLL yyyy');\nreturn [{ json: {\n  valid: true, source: scheduled ? 'schedule' : 'webhook', format, customer: raw.customer, currency, zone,\n  from: from.toISODate(), to: to.toISODate(), days,\n  period_label: label(from, to), prev_label: label(prevFrom, from.minus({ days: 1 })), ly_label: label(lyFrom, lyTo.minus({ days: 1 })),\n  query_params: JSON.stringify({ from: from.toUTC().toISO(), to: end.toUTC().toISO(), prev_from: prevFrom.toUTC().toISO(),\n    ly_from: lyFrom.toUTC().toISO(), ly_to: lyTo.toUTC().toISO(), tz: zone, customer: raw.customer, top_n: topN }),\n} }];"
+      }
+    },
+    {
+      "id": "d2-13",
+      "name": "Request Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        420,
+        100
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d2-14",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "d2-15",
+      "name": "Respond Bad Request",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        640,
+        240
+      ],
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.html }}",
+        "options": {
+          "responseCode": 400,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/html; charset=utf-8"
+              },
+              {
+                "name": "Cache-Control",
+                "value": "no-store"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "d2-16",
+      "name": "Load Sales Metrics",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "onError": "continueErrorOutput",
+      "position": [
+        900,
+        0
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH p AS (\n  SELECT (j->>'from')::timestamptz AS f, (j->>'to')::timestamptz AS t,\n         (j->>'prev_from')::timestamptz AS pf,\n         (j->>'ly_from')::timestamptz AS lf, (j->>'ly_to')::timestamptz AS lt,\n         j->>'tz' AS tz, NULLIF(j->>'customer', '') AS cust, (j->>'top_n')::int AS top_n\n  FROM (SELECT $1::jsonb AS j) s\n),\no AS MATERIALIZED (\n  SELECT o.id, o.customer, o.ordered_at, o.total,\n         (o.ordered_at >= p.f AND o.ordered_at < p.t) AS cur,\n         (o.ordered_at >= p.pf AND o.ordered_at < p.f) AS prev,\n         (o.ordered_at >= p.lf AND o.ordered_at < p.lt) AS ly\n  FROM sales_orders o, p\n  WHERE ((o.ordered_at >= p.pf AND o.ordered_at < p.t) OR (o.ordered_at >= p.lf AND o.ordered_at < p.lt))\n    AND (p.cust IS NULL OR lower(o.customer) = lower(p.cust))\n),\nk AS (\n  SELECT count(*) FILTER (WHERE cur) AS orders, coalesce(sum(total) FILTER (WHERE cur), 0) AS revenue,\n         count(DISTINCT customer) FILTER (WHERE cur) AS customers,\n         count(*) FILTER (WHERE prev) AS prev_orders, coalesce(sum(total) FILTER (WHERE prev), 0) AS prev_revenue,\n         count(*) FILTER (WHERE ly) AS ly_orders, coalesce(sum(total) FILTER (WHERE ly), 0) AS ly_revenue\n  FROM o\n),\nd AS (\n  SELECT (o.ordered_at AT TIME ZONE p.tz)::date AS day, count(*) AS orders, sum(o.total) AS revenue\n  FROM o, p WHERE o.cur GROUP BY 1\n),\ndays AS (\n  SELECT g::date AS day FROM p, generate_series((p.f AT TIME ZONE p.tz)::date, (p.t AT TIME ZONE p.tz)::date - 1, interval '1 day') g\n)\nSELECT k.*,\n  (SELECT p.cust IS NULL OR EXISTS (SELECT 1 FROM sales_orders s WHERE lower(s.customer) = lower(p.cust)) FROM p) AS customer_exists,\n  (SELECT s.customer FROM sales_orders s, p WHERE lower(s.customer) = lower(p.cust) LIMIT 1) AS customer_name,\n  (SELECT coalesce(json_agg(json_build_object('day', to_char(days.day, 'YYYY-MM-DD'), 'orders', coalesce(d.orders, 0), 'revenue', coalesce(d.revenue, 0)) ORDER BY days.day), '[]')\n     FROM days LEFT JOIN d USING (day)) AS daily,\n  (SELECT coalesce(json_agg(x ORDER BY x.revenue DESC, x.customer), '[]') FROM (\n     SELECT customer, count(*) AS orders, sum(total) AS revenue FROM o WHERE cur\n     GROUP BY customer ORDER BY revenue DESC, customer LIMIT (SELECT top_n FROM p)) x) AS top_customers,\n  (SELECT coalesce(json_agg(x ORDER BY x.revenue DESC, x.product), '[]') FROM (\n     SELECT i.product, sum(i.qty) AS qty, sum(i.amount) AS revenue FROM sales_order_items i JOIN o ON o.id = i.order_id\n     WHERE o.cur GROUP BY i.product ORDER BY revenue DESC, i.product LIMIT (SELECT top_n FROM p)) x) AS top_products\nFROM k;",
+        "options": {
+          "queryReplacement": "={{ $json.query_params }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "d2-17",
+      "name": "Browser Request?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1140,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d2-18",
+              "leftValue": "={{ $('Validate Request').first().json.source === 'webhook' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "d2-19",
+      "name": "Respond Database Unavailable",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1140,
+        500
+      ],
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>Dashboard unavailable</title></head><body style=\"font-family:system-ui,sans-serif;max-width:640px;margin:40px auto;padding:0 16px\"><h1>Dashboard temporarily unavailable</h1><p>The sales database did not answer. Please try again in a minute.</p></body></html>",
+        "options": {
+          "responseCode": 503,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/html; charset=utf-8"
+              },
+              {
+                "name": "Cache-Control",
+                "value": "no-store"
+              },
+              {
+                "name": "Retry-After",
+                "value": "60"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "d2-20",
+      "name": "Fail Weekly Report Query",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        1140,
+        640
+      ],
+      "parameters": {
+        "errorType": "errorMessage",
+        "errorMessage": "=Weekly sales report query failed: {{ $json.message }}"
+      }
+    },
+    {
+      "id": "d2-21",
+      "name": "Build Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1460,
+        0
+      ],
+      "parameters": {
+        "jsCode": "// Turn the one-row summary from Postgres into the dashboard page, the CSV and the weekly email.\nconst esc = (v) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;').replace(/'/g, '&#39;');\nconst page = (title, body) => '<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>' + esc(title) + '</title><style>'\n  + 'body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:0;background:#f5f6f8;color:#1f2933}main{max-width:1000px;margin:0 auto;padding:24px}'\n  + 'h1{font-size:24px;margin:0 0 4px}h2{font-size:17px;margin:28px 0 8px}.muted{color:#616e7c}.box{background:#fff;border:1px solid #e1e4e8;border-radius:8px;padding:16px}'\n  + 'form{display:flex;flex-wrap:wrap;gap:10px;align-items:end;margin:16px 0}label{font-size:13px;display:flex;flex-direction:column;gap:4px}input{padding:6px 8px;border:1px solid #c5ccd3;border-radius:6px;font:inherit}'\n  + 'button{padding:7px 14px;border:0;border-radius:6px;background:#1f6feb;color:#fff;font:inherit;cursor:pointer}.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}'\n  + '.tile .v{font-size:26px;font-weight:600;margin:4px 0}.up{color:#1a7f37}.down{color:#cf222e}table{width:100%;border-collapse:collapse;background:#fff}th,td{text-align:left;padding:7px 10px;border-bottom:1px solid #e1e4e8;font-size:14px}'\n  + 'td.n,th.n{text-align:right}.notice{background:#fff8c5;border:1px solid #d4a72c;border-radius:8px;padding:14px}.error{background:#ffebe9;border:1px solid #cf222e;border-radius:8px;padding:14px}svg{width:100%;height:auto}'\n  + '</style></head><body><main>' + body + '</main></body></html>';\nconst filterForm = (f) => '<form method=\"get\"><label>From<input type=\"date\" name=\"from\" value=\"' + esc(f.from) + '\"></label><label>To<input type=\"date\" name=\"to\" value=\"' + esc(f.to) + '\"></label>'\n  + '<label>Customer (optional)<input type=\"text\" name=\"customer\" value=\"' + esc(f.customer) + '\" placeholder=\"All customers\"></label><button type=\"submit\">Show</button></form>';\nconst r = $input.first().json;\nconst v = $('Validate Request').first().json;\nconst s = $('Dashboard Settings').first().json;\nconst num = (x) => Number(x) || 0;\nconst money = (x) => new Intl.NumberFormat('en-US', { style: 'currency', currency: v.currency }).format(num(x));\nconst int = (x) => new Intl.NumberFormat('en-US').format(num(x));\nconst aov = (rev, ord) => num(ord) ? num(rev) / num(ord) : 0;\nconst change = (cur, base) => {\n  cur = num(cur); base = num(base);\n  if (!base) return { text: cur ? 'new (none before)' : 'no change', cls: '' };\n  const p = (cur - base) / base * 100;\n  return { text: (p >= 0 ? '+' : '') + p.toFixed(1) + '%', cls: p > 0 ? 'up' : p < 0 ? 'down' : '' };\n};\nconst daily = Array.isArray(r.daily) ? r.daily : [];\nconst csv = 'date,orders,revenue,average_order_value\\n' + daily.map((d) => [d.day, num(d.orders), num(d.revenue).toFixed(2), aov(d.revenue, d.orders).toFixed(2)].join(',')).join('\\n') + '\\n';\nconst base = { status_code: 200, source: v.source, format: v.format, csv, csv_name: 'sales-' + v.from + '-to-' + v.to + '.csv' };\nconst filters = { from: v.from, to: v.to, customer: v.customer };\nconst scope = v.customer ? 'Customer: ' + (r.customer_name || v.customer) : 'All customers';\nif (!r.customer_exists) {\n  return [{ json: { ...base, status_code: 400, html: page('Unknown customer', '<h1>' + esc(s.dashboard_title) + '</h1>' + filterForm(filters)\n    + '<div class=\"error\"><b>Unknown customer.</b> No order has ever been placed by \"' + esc(v.customer) + '\". Check the spelling or leave the field empty for all customers.</div>') } }];\n}\nconst k = [\n  ['Revenue', money(r.revenue), change(r.revenue, r.prev_revenue), change(r.revenue, r.ly_revenue)],\n  ['Orders', int(r.orders), change(r.orders, r.prev_orders), change(r.orders, r.ly_orders)],\n  ['Average order value', money(aov(r.revenue, r.orders)), change(aov(r.revenue, r.orders), aov(r.prev_revenue, r.prev_orders)), change(aov(r.revenue, r.orders), aov(r.ly_revenue, r.ly_orders))],\n];\nconst tiles = '<div class=\"tiles\">' + k.map(([name, val, p, y]) => '<div class=\"box tile\"><div class=\"muted\">' + name + '</div><div class=\"v\">' + esc(val) + '</div>'\n  + '<div class=\"' + p.cls + '\">' + esc(p.text) + ' <span class=\"muted\">vs previous period</span></div><div class=\"' + y.cls + '\">' + esc(y.text) + ' <span class=\"muted\">vs last year</span></div></div>').join('') + '</div>';\nconst maxRev = Math.max(0, ...daily.map((d) => num(d.revenue)));\nconst W = 900, H = 200, bw = W / Math.max(daily.length, 1);\nconst bars = daily.map((d, i) => { const h = maxRev ? num(d.revenue) / maxRev * H : 0;\n  return '<rect x=\"' + (i * bw + bw * 0.1).toFixed(1) + '\" y=\"' + (H - h + 20).toFixed(1) + '\" width=\"' + Math.max(bw * 0.8, 0.5).toFixed(1) + '\" height=\"' + h.toFixed(1) + '\" fill=\"#1f6feb\"><title>' + esc(d.day + ': ' + money(d.revenue) + ', ' + int(d.orders) + ' orders') + '</title></rect>'; }).join('');\nconst chart = '<svg viewBox=\"0 0 ' + W + ' ' + (H + 44) + '\" role=\"img\" aria-label=\"Daily revenue\">' + bars\n  + '<line x1=\"0\" y1=\"' + (H + 20) + '\" x2=\"' + W + '\" y2=\"' + (H + 20) + '\" stroke=\"#c5ccd3\"/>'\n  + '<text x=\"0\" y=\"' + (H + 38) + '\" font-size=\"12\" fill=\"#616e7c\">' + esc(v.from) + '</text><text x=\"' + W + '\" y=\"' + (H + 38) + '\" font-size=\"12\" fill=\"#616e7c\" text-anchor=\"end\">' + esc(v.to) + '</text>'\n  + '<text x=\"0\" y=\"12\" font-size=\"12\" fill=\"#616e7c\">max ' + esc(money(maxRev)) + ' per day</text></svg>';\nconst table = (head, rows) => '<table><tr>' + head.map((h, i) => '<th' + (i ? ' class=\"n\"' : '') + '>' + h + '</th>').join('') + '</tr>'\n  + rows.map((row) => '<tr>' + row.map((c, i) => '<td' + (i ? ' class=\"n\"' : '') + '>' + esc(c) + '</td>').join('') + '</tr>').join('') + '</table>';\nconst custRows = (r.top_customers || []).map((c) => [c.customer, int(c.orders), money(c.revenue)]);\nconst prodRows = (r.top_products || []).map((p) => [p.product, int(p.qty), money(p.revenue)]);\nconst csvLink = '?from=' + v.from + '&to=' + v.to + (v.customer ? '&customer=' + encodeURIComponent(v.customer) : '') + '&format=csv';\nconst head = '<h1>' + esc(s.dashboard_title) + '</h1><div class=\"muted\">' + esc(v.period_label) + ' (' + v.days + (v.days === 1 ? ' day, ' : ' days, ') + esc(v.zone) + ') | ' + esc(scope) + '</div>' + filterForm(filters);\nconst compare = '<p class=\"muted\">Previous period: ' + esc(v.prev_label) + ' (' + esc(money(r.prev_revenue)) + '). Last year: ' + esc(v.ly_label) + ' (' + esc(money(r.ly_revenue)) + '). <a href=\"' + esc(csvLink) + '\">Download daily totals as CSV</a></p>';\nconst empty = !num(r.orders);\nconst body = head + (empty ? '<div class=\"notice\"><b>No orders in this period.</b> There are no orders from ' + esc(v.period_label) + (v.customer ? ' for ' + esc(r.customer_name || v.customer) : '') + '.</div>' : '')\n  + '<h2>Key figures</h2>' + tiles + compare\n  + (empty ? '' : '<h2>Daily revenue</h2><div class=\"box\">' + chart + '</div><h2>Top customers</h2>' + table(['Customer', 'Orders', 'Revenue'], custRows) + '<h2>Top products</h2>' + table(['Product', 'Quantity', 'Revenue'], prodRows));\nconst eTable = (head, rows) => '<table cellpadding=\"6\" style=\"border-collapse:collapse;font-size:14px\"><tr>' + head.map((h) => '<th align=\"left\" style=\"border-bottom:1px solid #ccc\">' + h + '</th>').join('') + '</tr>'\n  + rows.map((row) => '<tr>' + row.map((c) => '<td style=\"border-bottom:1px solid #eee\">' + esc(c) + '</td>').join('') + '</tr>').join('') + '</table>';\nconst emailHtml = '<h2>' + esc(s.dashboard_title) + ': ' + esc(v.period_label) + '</h2>'\n  + (empty ? '<p><b>No orders in this period.</b></p>' : '')\n  + eTable(['Figure', 'This period', 'vs previous', 'vs last year'], k.map(([name, val, p, y]) => [name, val, p.text, y.text]))\n  + (empty ? '' : '<h3>Top customers</h3>' + eTable(['Customer', 'Orders', 'Revenue'], custRows) + '<h3>Top products</h3>' + eTable(['Product', 'Quantity', 'Revenue'], prodRows));\nreturn [{ json: { ...base, html: page(s.dashboard_title + ' | ' + v.period_label, body), email_html: emailHtml,\n  email_subject: 'Weekly sales ' + v.period_label + ': ' + money(r.revenue) + ' (' + change(r.revenue, r.prev_revenue).text + ' vs previous week)' } }];"
+      }
+    },
+    {
+      "id": "d2-22",
+      "name": "Weekly Run?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1680,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d2-23",
+              "leftValue": "={{ $json.source === 'schedule' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "d2-24",
+      "name": "Send Weekly Report Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "onError": "continueErrorOutput",
+      "position": [
+        1920,
+        -60
+      ],
+      "parameters": {
+        "fromEmail": "={{ $('Dashboard Settings').first().json.from_email }}",
+        "toEmail": "={{ $('Dashboard Settings').first().json.report_email }}",
+        "subject": "={{ $json.email_subject }}",
+        "emailFormat": "html",
+        "html": "={{ $json.email_html }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "smtp": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "d2-25",
+      "name": "Fail Weekly Email",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        2160,
+        60
+      ],
+      "parameters": {
+        "errorType": "errorMessage",
+        "errorMessage": "=Weekly sales email could not be sent: {{ $json.error?.message || $json.error || $json.message || 'SMTP error' }}"
+      }
+    },
+    {
+      "id": "d2-26",
+      "name": "CSV Requested?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1920,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d2-27",
+              "leftValue": "={{ $json.format === 'csv' && $json.status_code === 200 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "d2-28",
+      "name": "Respond CSV",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        2160,
+        240
+      ],
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.csv }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/csv; charset=utf-8"
+              },
+              {
+                "name": "Content-Disposition",
+                "value": "=attachment; filename=\"{{ $json.csv_name }}\""
+              },
+              {
+                "name": "Cache-Control",
+                "value": "no-store"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "d2-29",
+      "name": "Respond Dashboard",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        2160,
+        440
+      ],
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.html }}",
+        "options": {
+          "responseCode": "={{ $json.status_code }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/html; charset=utf-8"
+              },
+              {
+                "name": "Cache-Control",
+                "value": "no-store"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Run Once to Create Tables": {
+      "main": [
+        [
+          {
+            "node": "Create Sales Tables",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Sales Tables": {
+      "main": [
+        [
+          {
+            "node": "Add Demo Orders If Empty",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sales Dashboard Webhook": {
+      "main": [
+        [
+          {
+            "node": "Dashboard Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Weekly Report Schedule": {
+      "main": [
+        [
+          {
+            "node": "Dashboard Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dashboard Settings": {
+      "main": [
+        [
+          {
+            "node": "Validate Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Request": {
+      "main": [
+        [
+          {
+            "node": "Request Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Request Valid?": {
+      "main": [
+        [
+          {
+            "node": "Load Sales Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Bad Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Sales Metrics": {
+      "main": [
+        [
+          {
+            "node": "Build Report",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Browser Request?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Browser Request?": {
+      "main": [
+        [
+          {
+            "node": "Respond Database Unavailable",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fail Weekly Report Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Report": {
+      "main": [
+        [
+          {
+            "node": "Weekly Run?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Weekly Run?": {
+      "main": [
+        [
+          {
+            "node": "Send Weekly Report Email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "CSV Requested?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Weekly Report Email": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Fail Weekly Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CSV Requested?": {
+      "main": [
+        [
+          {
+            "node": "Respond CSV",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Dashboard",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {}
+}

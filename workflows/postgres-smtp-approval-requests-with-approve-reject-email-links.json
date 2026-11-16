@@ -1,0 +1,1281 @@
+{
+  "name": "Postgres SMTP Approval Requests with Approve Reject Email Links",
+  "nodes": [
+    {
+      "id": "a1-1",
+      "name": "Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1000,
+        -480
+      ],
+      "parameters": {
+        "content": "## Email approvals that cannot be double-clicked or left hanging\n\n### How it works\n1. Someone fills in **Approval Request Form** (Basic Auth). **Validate Request** rejects empty, whitespace-only or invalid fields and self-approval.\n2. **Save Request** stores it in Postgres with a random 64-character token and the approver gets Approve and Reject links. No Wait node: the state lives in Postgres.\n3. Opening a link only shows a confirmation page, so mail scanners that prefetch links decide nothing. Its button posts to **Decision Submitted**.\n4. **Record Decision** changes the row only while it is pending and unexpired. A second, simultaneous or late click gets an \"already decided\" or \"expired\" page. The requester is emailed the decision and comment.\n5. Every 15 minutes approvers get one reminder after `remind_after_hours`; after `expire_after_hours` the request expires and the requester is told.\n\n### Setup\n1. Add a Postgres credential (user needs CREATE) to every Postgres node and run **Run Once to Create Table**.\n2. Add an SMTP credential to every email node and a Basic Auth credential to the form.\n3. In **Approval Settings** set `organization_name`, `from_email` (an address your SMTP account may send from), `remind_after_hours` and `expire_after_hours`. Check `decision_page_url` matches the Production URL of **Decision Link Opened**.\n4. Set your timezone in Workflow settings, activate, and share the form's Production URL.\n\n### Customization\nChange the interval in **Every 15 Minutes**. Settings are saved with each request, so changes affect new requests only.\n\nAnyone holding the email can decide, so forward it with care. Email errors are saved in `last_email_error`; a failed reminder retries next run. If Postgres is down, the form and pages show an error and nothing changes; set an Error Workflow for scheduled runs.",
+        "width": 600,
+        "height": 1960
+      }
+    },
+    {
+      "id": "a1-2",
+      "name": "Setup Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -360,
+        -480
+      ],
+      "parameters": {
+        "content": "## One-time setup\nCreates the approval_requests table and the approval_decide function that records a decision only once.",
+        "width": 620,
+        "height": 280,
+        "color": 7
+      }
+    },
+    {
+      "id": "a1-3",
+      "name": "Intake Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -360,
+        -160
+      ],
+      "parameters": {
+        "content": "## New request\nValidate, store with a random token and email the approver. If that email fails, the request is cancelled and the requester sees why.",
+        "width": 1900,
+        "height": 440,
+        "color": 7
+      }
+    },
+    {
+      "id": "a1-4",
+      "name": "Decision Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -360,
+        320
+      ],
+      "parameters": {
+        "content": "## Decision links\nOpening a link only shows a confirmation page. The button POSTs the decision, which Postgres records once. The requester is emailed the result.",
+        "width": 1900,
+        "height": 680,
+        "color": 7
+      }
+    },
+    {
+      "id": "a1-5",
+      "name": "Schedule Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -360,
+        1040
+      ],
+      "parameters": {
+        "content": "## Reminders and expiry\nExpired requests are closed and the requester is told. Approvers get one reminder; a failed reminder is retried on the next run.",
+        "width": 1900,
+        "height": 440,
+        "color": 7
+      }
+    },
+    {
+      "id": "a1-6",
+      "name": "Run Once to Create Table",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -300,
+        -360
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "a1-7",
+      "name": "Create Approval Table",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        -60,
+        -360
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "CREATE TABLE IF NOT EXISTS approval_requests (\n  id bigserial PRIMARY KEY,\n  token text NOT NULL UNIQUE,\n  title text NOT NULL,\n  details text NOT NULL DEFAULT '',\n  requester_name text NOT NULL,\n  requester_email text NOT NULL,\n  approver_email text NOT NULL,\n  organization_name text NOT NULL DEFAULT '',\n  from_email text NOT NULL,\n  decision_url text NOT NULL,\n  status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected', 'expired', 'not_sent')),\n  decision_comment text,\n  created_at timestamptz NOT NULL DEFAULT now(),\n  remind_at timestamptz NOT NULL,\n  expires_at timestamptz NOT NULL,\n  reminded_at timestamptz,\n  decided_at timestamptz,\n  last_email_error text\n);\nCREATE INDEX IF NOT EXISTS approval_requests_due ON approval_requests (status, expires_at);\nCREATE OR REPLACE FUNCTION approval_decide(p_token text, p_decision text, p_comment text)\nRETURNS TABLE (outcome text, id bigint, status text, title text, details text, requester_name text, requester_email text,\n  approver_email text, organization_name text, from_email text, decision_comment text, decided_at timestamptz, expires_at timestamptz)\nLANGUAGE plpgsql AS $$\n#variable_conflict use_column\nBEGIN\n  IF p_decision IS NULL OR p_decision NOT IN ('approved', 'rejected') THEN\n    outcome := 'invalid'; RETURN NEXT; RETURN;\n  END IF;\n  -- Compare-and-set: only a pending, unexpired request changes. A simultaneous click waits for the row lock, then matches nothing.\n  RETURN QUERY\n    UPDATE approval_requests r SET status = p_decision, decided_at = now(), decision_comment = NULLIF(p_comment, '')\n    WHERE r.token = p_token AND r.status = 'pending' AND r.expires_at > now()\n    RETURNING 'recorded'::text, r.id, r.status, r.title, r.details, r.requester_name, r.requester_email,\n      r.approver_email, r.organization_name, r.from_email, r.decision_comment, r.decided_at, r.expires_at;\n  IF FOUND THEN RETURN; END IF;\n  -- A new statement takes a fresh snapshot, so it sees a decision another click has just committed.\n  RETURN QUERY\n    SELECT CASE WHEN r.status IN ('approved', 'rejected') THEN 'already_decided' ELSE 'expired' END,\n      r.id, r.status, r.title, r.details, r.requester_name, r.requester_email,\n      r.approver_email, r.organization_name, r.from_email, r.decision_comment, r.decided_at, r.expires_at\n    FROM approval_requests r WHERE r.token = p_token AND r.status <> 'not_sent';\n  IF FOUND THEN RETURN; END IF;\n  outcome := 'not_found'; RETURN NEXT;\nEND $$;",
+        "options": {
+          "connectionTimeout": 10
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "a1-8",
+      "name": "Approval Request Form",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.3,
+      "position": [
+        -300,
+        -20
+      ],
+      "parameters": {
+        "authentication": "basicAuth",
+        "formTitle": "Request approval",
+        "formDescription": "The approver gets an email with Approve and Reject links. You will be emailed the decision.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Your Name",
+              "fieldType": "text",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Your Email",
+              "fieldType": "email",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Approver Email",
+              "fieldType": "email",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "What Needs Approval",
+              "fieldType": "text",
+              "requiredField": true,
+              "placeholder": "e.g. Laptop purchase, 1,450 USD"
+            },
+            {
+              "fieldLabel": "Details",
+              "fieldType": "textarea"
+            }
+          ]
+        },
+        "options": {
+          "appendAttribution": false,
+          "path": "approval-request"
+        }
+      },
+      "credentials": {
+        "httpBasicAuth": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "a1-9",
+      "name": "Decision Link Opened",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -300,
+        440
+      ],
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "approval-decision",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "a1-10",
+      "name": "Decision Submitted",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -300,
+        700
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "approval-decision",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "a1-11",
+      "name": "Every 15 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -300,
+        1260
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "a1-12",
+      "name": "Approval Settings",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -80,
+        -20
+      ],
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": true,
+        "include": "all",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "s1",
+              "name": "organization_name",
+              "type": "string",
+              "value": "Example Company"
+            },
+            {
+              "id": "s2",
+              "name": "from_email",
+              "type": "string",
+              "value": "Approvals <approvals@example.com>"
+            },
+            {
+              "id": "s3",
+              "name": "remind_after_hours",
+              "type": "number",
+              "value": 24
+            },
+            {
+              "id": "s4",
+              "name": "expire_after_hours",
+              "type": "number",
+              "value": 72
+            },
+            {
+              "id": "s5",
+              "name": "decision_page_url",
+              "type": "string",
+              "value": "={{ $execution.resumeUrl.split('/webhook-waiting/')[0] }}/webhook/approval-decision"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "a1-13",
+      "name": "Validate Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        140,
+        -20
+      ],
+      "parameters": {
+        "jsCode": "// Server-side checks. Nothing is stored or emailed unless every field is valid.\nconst s = $input.first().json;\nconst fail = (error) => [{ json: { valid: false, error } }];\nconst line = (v) => String(v ?? '').replace(/\\s+/g, ' ').trim();\nconst EMAIL = /^[^\\s@<>\",;]+@[^\\s@<>\",;]+\\.[^\\s@<>\",;]+$/;\nconst name = line(s['Your Name']);\nconst requester = line(s['Your Email']).toLowerCase();\nconst approver = line(s['Approver Email']).toLowerCase();\nconst title = line(s['What Needs Approval']);\nconst details = String(s['Details'] ?? '').replace(/\\r\\n?/g, '\\n').trim();\nif (!name) return fail('Please enter your name.');\nif (name.length > 100) return fail('Please keep your name under 100 characters.');\nif (!EMAIL.test(requester)) return fail('Please enter a valid email address for yourself.');\nif (!EMAIL.test(approver)) return fail('Please enter a valid email address for the approver.');\nif (approver === requester) return fail('You cannot approve your own request. Please enter someone else as the approver.');\nif (!title) return fail('Please describe what needs approval.');\nif (title.length > 150) return fail('Please keep \"What Needs Approval\" under 150 characters and put the rest in Details.');\nif (details.length > 3000) return fail('Please keep Details under 3000 characters.');\nconst remind = Number(s.remind_after_hours), expire = Number(s.expire_after_hours);\nif (!(expire > 0) || !(remind > 0) || remind >= expire) return fail('Setup problem: remind_after_hours and expire_after_hours must be above 0, with the reminder first. Nothing was sent.');\nif (!/^https?:\\/\\/[^\\s\"<>]+$/.test(String(s.decision_page_url ?? ''))) return fail('Setup problem: decision_page_url must be the Production URL of Decision Link Opened. Nothing was sent.');\nreturn [{ json: { valid: true, name, requester, approver, title, details, remind, expire } }];"
+      }
+    },
+    {
+      "id": "a1-14",
+      "name": "Request Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        360,
+        -20
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a1-15",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "a1-16",
+      "name": "Save Request",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "onError": "continueErrorOutput",
+      "position": [
+        580,
+        -60
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO approval_requests (token, title, details, requester_name, requester_email, approver_email,\n  organization_name, from_email, decision_url, remind_at, expires_at)\nVALUES (replace(gen_random_uuid()::text || gen_random_uuid()::text, '-', ''), $1, $2, $3, $4, $5, $9, $10, $11,\n  now() + $6::numeric * interval '1 hour', now() + $7::numeric * interval '1 hour')\nRETURNING id, token, to_char(expires_at AT TIME ZONE $8, 'Dy DD Mon YYYY HH24:MI') || ' ' || $8 AS expires_label;",
+        "options": {
+          "queryReplacement": "={{ $json.title }},{{ $json.details }},{{ $json.name }},{{ $json.requester }},{{ $json.approver }},{{ $json.remind }},{{ $json.expire }},{{ $now.zoneName }},{{ $('Approval Settings').first().json.organization_name }},{{ $('Approval Settings').first().json.from_email }},{{ $('Approval Settings').first().json.decision_page_url }}",
+          "connectionTimeout": 10
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "a1-17",
+      "name": "Request Not Valid",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.3,
+      "position": [
+        580,
+        140
+      ],
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "text",
+        "completionTitle": "Please check your request",
+        "completionMessage": "={{ $json.error }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "a1-18",
+      "name": "Email Approver",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "onError": "continueErrorOutput",
+      "position": [
+        800,
+        -80
+      ],
+      "parameters": {
+        "fromEmail": "={{ $('Approval Settings').first().json.from_email }}",
+        "toEmail": "={{ $('Validate Request').first().json.approver }}",
+        "subject": "=Approval needed: {{ $('Validate Request').first().json.title }}",
+        "emailFormat": "html",
+        "html": "=<p>{{ String($('Validate Request').first().json.name ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;') }} ({{ String($('Validate Request').first().json.requester ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;') }}) asks for your approval:</p>\n<h2>{{ String($('Validate Request').first().json.title ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;') }}</h2>\n{{ $('Validate Request').first().json.details ? '<p>' + String($('Validate Request').first().json.details ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;').replace(/\\n/g, '<br>') + '</p>' : '' }}\n<p><a href=\"{{ String(($('Approval Settings').first().json.decision_page_url + ($('Approval Settings').first().json.decision_page_url.includes('?') ? '&' : '?') + 'token=' + $('Save Request').first().json.token + '&decision=approve') ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;') }}\" style=\"background:#1f7a3d;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none\">Approve</a>\n&nbsp; <a href=\"{{ String(($('Approval Settings').first().json.decision_page_url + ($('Approval Settings').first().json.decision_page_url.includes('?') ? '&' : '?') + 'token=' + $('Save Request').first().json.token + '&decision=reject') ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;') }}\" style=\"background:#b42318;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none\">Reject</a></p>\n<p>Each link opens a confirmation page. Nothing is recorded until you press the button there. This request expires on {{ String($('Save Request').first().json.expires_label ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;') }}.</p>",
+        "options": {
+          "appendAttribution": false,
+          "replyTo": "={{ $('Validate Request').first().json.requester }}"
+        }
+      },
+      "credentials": {
+        "smtp": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "a1-19",
+      "name": "Could Not Save Request",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.3,
+      "position": [
+        800,
+        100
+      ],
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "text",
+        "completionTitle": "Request not sent",
+        "completionMessage": "=The approval database is unavailable, so nothing was saved or sent. Please try again in a few minutes.",
+        "options": {}
+      }
+    },
+    {
+      "id": "a1-20",
+      "name": "Request Sent",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.3,
+      "position": [
+        1300,
+        -80
+      ],
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "text",
+        "completionTitle": "Request sent",
+        "completionMessage": "=We emailed {{ $('Validate Request').first().json.approver }}. You will get an email when they decide. If they do not decide by {{ $('Save Request').first().json.expires_label }}, the request expires and you will be told.",
+        "options": {}
+      }
+    },
+    {
+      "id": "a1-21",
+      "name": "Mark Request Not Sent",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "onError": "continueRegularOutput",
+      "position": [
+        1040,
+        60
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE approval_requests SET status = 'not_sent', last_email_error = left($2, 500)\nWHERE id = $1::bigint AND status = 'pending' RETURNING id;",
+        "options": {
+          "queryReplacement": "={{ $('Save Request').first().json.id }},{{ $json.error?.message ?? $json.message ?? $json.error ?? 'SMTP send failed' }}",
+          "connectionTimeout": 10
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "a1-22",
+      "name": "Approver Not Reached",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.3,
+      "position": [
+        1300,
+        60
+      ],
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "text",
+        "completionTitle": "Request not sent",
+        "completionMessage": "=We could not email {{ $('Validate Request').first().json.approver }}, so the request was cancelled. Check the address and submit the form again.",
+        "options": {}
+      }
+    },
+    {
+      "id": "a1-23",
+      "name": "Check Link",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -80,
+        440
+      ],
+      "parameters": {
+        "jsCode": "// Read the token and the button the approver clicked from the link. A malformed token is treated as unknown.\nconst q = $('Decision Link Opened').first().json.query || {};\nconst token = String(q.token ?? '').trim().toLowerCase();\nconst choice = String(q.decision ?? '').trim().toLowerCase();\nreturn [{ json: { token: /^[0-9a-f]{64}$/.test(token) ? token : '', choice: ['approve', 'reject'].includes(choice) ? choice : '' } }];"
+      }
+    },
+    {
+      "id": "a1-24",
+      "name": "Look Up Request",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "onError": "continueErrorOutput",
+      "position": [
+        140,
+        440
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT CASE WHEN r.id IS NULL THEN 'not_found'\n    WHEN r.status IN ('approved', 'rejected') THEN 'already_decided'\n    WHEN r.status = 'expired' OR r.expires_at <= now() THEN 'expired'\n    ELSE 'pending' END AS outcome,\n  r.id, r.status, r.title, r.details, r.requester_name, r.requester_email, r.approver_email, r.organization_name, r.decision_comment,\n  to_char(r.decided_at AT TIME ZONE $2, 'Dy DD Mon YYYY HH24:MI') || ' ' || $2 AS decided_label,\n  to_char(r.expires_at AT TIME ZONE $2, 'Dy DD Mon YYYY HH24:MI') || ' ' || $2 AS expires_label\nFROM (SELECT 1) AS one\nLEFT JOIN approval_requests r ON r.token = $1 AND r.status <> 'not_sent';",
+        "options": {
+          "queryReplacement": "={{ $json.token }},{{ $now.zoneName }}",
+          "connectionTimeout": 10
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "a1-25",
+      "name": "Build Confirmation Page",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        440
+      ],
+      "parameters": {
+        "jsCode": "// Opening a link never decides anything: it only shows this page. The decision is recorded when the button POSTs the form.\nconst esc = (v) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;').replace(/'/g, '&#39;');\nconst page = (heading, body, code, org = '') => [{ json: { code, html: '<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><meta name=\"robots\" content=\"noindex\">'\n  + '<title>' + esc(heading) + '</title><style>body{font-family:system-ui,sans-serif;background:#f4f5f7;margin:0;padding:24px;color:#222}main{max-width:560px;margin:40px auto;background:#fff;border-radius:8px;padding:28px;box-shadow:0 1px 4px rgba(0,0,0,.1)}'\n  + 'h1{font-size:22px;margin-top:0}.muted{color:#666;font-size:14px}textarea{width:100%;box-sizing:border-box;min-height:80px;margin:8px 0 16px}button{font-size:16px;padding:10px 20px;border:0;border-radius:6px;cursor:pointer;margin-right:8px}.approve{background:#1f7a3d;color:#fff}.reject{background:#b42318;color:#fff}.box{background:#f8f8f8;padding:12px;border-radius:6px;white-space:pre-wrap}</style></head>'\n  + '<body><main><p class=\"muted\">' + esc(org) + '</p><h1>' + esc(heading) + '</h1>' + body + '</main></body></html>' } }];\nconst request = (r) => '<p><b>' + esc(r.title) + '</b><br><span class=\"muted\">Requested by ' + esc(r.requester_name) + ' (' + esc(r.requester_email) + ')</span></p>' + (r.details ? '<div class=\"box\">' + esc(r.details) + '</div>' : '');\nconst decided = (r) => page('This request was already ' + r.status, request(r) + '<p>It was ' + esc(r.status) + ' on ' + esc(r.decided_label) + '. Nothing was changed.</p>', 409, r.organization_name);\nconst expired = (r) => page('This request has expired', request(r) + '<p>It expired on ' + esc(r.expires_label) + ' without a decision. Nothing was changed. Ask the requester to submit it again if it is still needed.</p>', 410, r.organization_name);\nconst missing = () => page('This link is not valid', '<p>The link is incomplete or the request does not exist. Open the link from the original email, without changing it.</p>', 404);\nconst r = $input.first().json;\nconst choice = $('Check Link').first().json.choice;\nif (r.outcome === 'already_decided') return decided(r);\nif (r.outcome === 'expired') return expired(r);\nif (r.outcome !== 'pending') return missing();\nconst approve = '<button class=\"approve\" type=\"submit\" name=\"decision\" value=\"approve\">Approve</button>';\nconst reject = '<button class=\"reject\" type=\"submit\" name=\"decision\" value=\"reject\">Reject</button>';\nreturn page(choice === 'reject' ? 'Reject this request?' : choice === 'approve' ? 'Approve this request?' : 'Approve or reject this request?',\n  request(r)\n  + '<form method=\"post\"><input type=\"hidden\" name=\"token\" value=\"' + esc($('Check Link').first().json.token) + '\">'\n  + '<label for=\"comment\">Comment for the requester (optional)</label><textarea id=\"comment\" name=\"comment\" maxlength=\"1000\"></textarea>'\n  + (choice === 'reject' ? reject + approve : approve + reject) + '</form>'\n  + '<p class=\"muted\">Nothing is recorded until you press a button. This request expires on ' + esc(r.expires_label) + '.</p>', 200, r.organization_name);"
+      }
+    },
+    {
+      "id": "a1-26",
+      "name": "Check Decision",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -80,
+        700
+      ],
+      "parameters": {
+        "jsCode": "// Read the confirmation form. The decision comes only from the button pressed (POST body), never from the link.\nconst b = $('Decision Submitted').first().json.body || {};\nconst token = String(b.token ?? '').trim().toLowerCase();\nconst decision = { approve: 'approved', reject: 'rejected' }[String(b.decision ?? '').trim().toLowerCase()] || 'invalid';\nconst comment = String(b.comment ?? '').replace(/\\r\\n?/g, '\\n').trim().slice(0, 1000);\nreturn [{ json: { token: /^[0-9a-f]{64}$/.test(token) ? token : '', decision, comment } }];"
+      }
+    },
+    {
+      "id": "a1-27",
+      "name": "Record Decision",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "onError": "continueErrorOutput",
+      "position": [
+        140,
+        700
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT d.*,\n  to_char(d.decided_at AT TIME ZONE $4, 'Dy DD Mon YYYY HH24:MI') || ' ' || $4 AS decided_label,\n  to_char(d.expires_at AT TIME ZONE $4, 'Dy DD Mon YYYY HH24:MI') || ' ' || $4 AS expires_label\nFROM approval_decide($1, $2, $3) AS d;",
+        "options": {
+          "queryReplacement": "={{ $json.token }},{{ $json.decision }},{{ $json.comment }},{{ $now.zoneName }}",
+          "connectionTimeout": 10
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "a1-28",
+      "name": "Decision Recorded?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        360,
+        680
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a1-29",
+              "leftValue": "={{ $json.outcome === 'recorded' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "a1-30",
+      "name": "Email Requester Decision",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "onError": "continueErrorOutput",
+      "position": [
+        580,
+        660
+      ],
+      "parameters": {
+        "fromEmail": "={{ $('Record Decision').first().json.from_email }}",
+        "toEmail": "={{ $('Record Decision').first().json.requester_email }}",
+        "subject": "=Your request was {{ $('Record Decision').first().json.status }}: {{ $('Record Decision').first().json.title }}",
+        "emailFormat": "html",
+        "html": "=<p>Hi {{ String($('Record Decision').first().json.requester_name ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;') }},</p>\n<p>Your request <b>{{ String($('Record Decision').first().json.title ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;') }}</b> was <b>{{ $('Record Decision').first().json.status }}</b> by {{ String($('Record Decision').first().json.approver_email ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;') }} on {{ String($('Record Decision').first().json.decided_label ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;') }}.</p>\n{{ $('Record Decision').first().json.decision_comment ? '<p>Comment:</p><p>' + String($('Record Decision').first().json.decision_comment ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;').replace(/\\n/g, '<br>') + '</p>' : '' }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "smtp": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "a1-31",
+      "name": "Save Decision Email Error",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "onError": "continueRegularOutput",
+      "position": [
+        800,
+        820
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE approval_requests SET last_email_error = left($2, 500) WHERE id = $1::bigint RETURNING id;",
+        "options": {
+          "queryReplacement": "={{ $('Record Decision').first().json.id }},{{ $json.error?.message ?? $json.message ?? $json.error ?? 'SMTP send failed' }}",
+          "connectionTimeout": 10
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "a1-32",
+      "name": "Build Result Page",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        680
+      ],
+      "parameters": {
+        "jsCode": "// Page shown after the button was pressed. Covers recorded, already decided, expired, invalid and unknown requests.\nconst esc = (v) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;').replace(/'/g, '&#39;');\nconst page = (heading, body, code, org = '') => [{ json: { code, html: '<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><meta name=\"robots\" content=\"noindex\">'\n  + '<title>' + esc(heading) + '</title><style>body{font-family:system-ui,sans-serif;background:#f4f5f7;margin:0;padding:24px;color:#222}main{max-width:560px;margin:40px auto;background:#fff;border-radius:8px;padding:28px;box-shadow:0 1px 4px rgba(0,0,0,.1)}'\n  + 'h1{font-size:22px;margin-top:0}.muted{color:#666;font-size:14px}textarea{width:100%;box-sizing:border-box;min-height:80px;margin:8px 0 16px}button{font-size:16px;padding:10px 20px;border:0;border-radius:6px;cursor:pointer;margin-right:8px}.approve{background:#1f7a3d;color:#fff}.reject{background:#b42318;color:#fff}.box{background:#f8f8f8;padding:12px;border-radius:6px;white-space:pre-wrap}</style></head>'\n  + '<body><main><p class=\"muted\">' + esc(org) + '</p><h1>' + esc(heading) + '</h1>' + body + '</main></body></html>' } }];\nconst request = (r) => '<p><b>' + esc(r.title) + '</b><br><span class=\"muted\">Requested by ' + esc(r.requester_name) + ' (' + esc(r.requester_email) + ')</span></p>' + (r.details ? '<div class=\"box\">' + esc(r.details) + '</div>' : '');\nconst decided = (r) => page('This request was already ' + r.status, request(r) + '<p>It was ' + esc(r.status) + ' on ' + esc(r.decided_label) + '. Nothing was changed.</p>', 409, r.organization_name);\nconst expired = (r) => page('This request has expired', request(r) + '<p>It expired on ' + esc(r.expires_label) + ' without a decision. Nothing was changed. Ask the requester to submit it again if it is still needed.</p>', 410, r.organization_name);\nconst missing = () => page('This link is not valid', '<p>The link is incomplete or the request does not exist. Open the link from the original email, without changing it.</p>', 404);\nconst r = $('Record Decision').first().json;\nif (r.outcome === 'already_decided') return decided(r);\nif (r.outcome === 'expired') return expired(r);\nif (r.outcome === 'invalid') return page('Please choose Approve or Reject', '<p>No decision was recorded. Go back and press one of the two buttons.</p>', 400, r.organization_name);\nif (r.outcome !== 'recorded') return missing();\nconst emailFailed = $('Save Decision Email Error').isExecuted;\nreturn page('Request ' + r.status, request(r)\n  + (r.decision_comment ? '<p>Your comment:</p><div class=\"box\">' + esc(r.decision_comment) + '</div>' : '')\n  + '<p>Your decision was recorded on ' + esc(r.decided_label) + '. '\n  + (emailFailed ? 'We could not email ' + esc(r.requester_email) + ', so please let them know yourself.' : esc(r.requester_name) + ' has been emailed.') + '</p>', 200, r.organization_name);"
+      }
+    },
+    {
+      "id": "a1-33",
+      "name": "Send Page",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1300,
+        560
+      ],
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.html }}",
+        "options": {
+          "responseCode": "={{ $json.code }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/html; charset=utf-8"
+              },
+              {
+                "name": "Cache-Control",
+                "value": "no-store"
+              },
+              {
+                "name": "Referrer-Policy",
+                "value": "no-referrer"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "a1-34",
+      "name": "Send Database Unavailable Page",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        360,
+        880
+      ],
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"robots\" content=\"noindex\"><title>Temporarily unavailable</title></head><body style=\"font-family:system-ui,sans-serif;padding:40px\"><h1>Temporarily unavailable</h1><p>The approval database cannot be reached, so nothing was recorded. Please try the same link again in a few minutes.</p></body></html>",
+        "options": {
+          "responseCode": 503,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/html; charset=utf-8"
+              },
+              {
+                "name": "Cache-Control",
+                "value": "no-store"
+              },
+              {
+                "name": "Referrer-Policy",
+                "value": "no-referrer"
+              },
+              {
+                "name": "Retry-After",
+                "value": "300"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "a1-35",
+      "name": "Expire Overdue Requests",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "executeOnce": true,
+      "position": [
+        -80,
+        1180
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE approval_requests SET status = 'expired'\nWHERE status = 'pending' AND expires_at <= now()\nRETURNING id, title, requester_name, requester_email, approver_email, from_email,\n  to_char(expires_at AT TIME ZONE $1, 'Dy DD Mon YYYY HH24:MI') || ' ' || $1 AS expires_label;",
+        "options": {
+          "queryReplacement": "={{ $now.zoneName }}",
+          "connectionTimeout": 10
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "a1-36",
+      "name": "Any Expired?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        140,
+        1180
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a1-37",
+              "leftValue": "={{ $json.id !== undefined }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "a1-38",
+      "name": "Email Requester Expired",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "onError": "continueErrorOutput",
+      "position": [
+        360,
+        1160
+      ],
+      "parameters": {
+        "fromEmail": "={{ $json.from_email }}",
+        "toEmail": "={{ $json.requester_email }}",
+        "subject": "=Your request expired: {{ $json.title }}",
+        "emailFormat": "html",
+        "html": "=<p>Hi {{ String($json.requester_name ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;') }},</p>\n<p>Your request <b>{{ String($json.title ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;') }}</b> expired on {{ String($json.expires_label ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;') }} because {{ String($json.approver_email ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;') }} did not approve or reject it in time. Nothing was approved.</p>\n<p>Submit it again if it is still needed.</p>",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "smtp": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "a1-39",
+      "name": "Save Expiry Email Error",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        580,
+        1220
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE approval_requests SET last_email_error = left($2, 500) WHERE id = $1::bigint RETURNING id;",
+        "options": {
+          "queryReplacement": "={{ $('Expire Overdue Requests').item.json.id }},{{ $json.error?.message ?? $json.message ?? $json.error ?? 'SMTP send failed' }}",
+          "connectionTimeout": 10
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "a1-40",
+      "name": "Claim Due Reminders",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "executeOnce": true,
+      "position": [
+        -80,
+        1360
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE approval_requests SET reminded_at = now()\nWHERE status = 'pending' AND reminded_at IS NULL AND remind_at <= now() AND expires_at > now()\nRETURNING id, token, title, details, requester_name, requester_email, approver_email, from_email, decision_url,\n  to_char(expires_at AT TIME ZONE $1, 'Dy DD Mon YYYY HH24:MI') || ' ' || $1 AS expires_label;",
+        "options": {
+          "queryReplacement": "={{ $now.zoneName }}",
+          "connectionTimeout": 10
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "a1-41",
+      "name": "Any Reminders?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        140,
+        1360
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a1-42",
+              "leftValue": "={{ $json.id !== undefined }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "a1-43",
+      "name": "Email Approver Reminder",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "onError": "continueErrorOutput",
+      "position": [
+        360,
+        1340
+      ],
+      "parameters": {
+        "fromEmail": "={{ $json.from_email }}",
+        "toEmail": "={{ $json.approver_email }}",
+        "subject": "=Reminder, approval needed: {{ $json.title }}",
+        "emailFormat": "html",
+        "html": "=<p><b>Reminder:</b> this request is still waiting for your decision.</p><p>{{ String($json.requester_name ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;') }} ({{ String($json.requester_email ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;') }}) asks for your approval:</p>\n<h2>{{ String($json.title ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;') }}</h2>\n{{ $json.details ? '<p>' + String($json.details ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;').replace(/\\n/g, '<br>') + '</p>' : '' }}\n<p><a href=\"{{ String(($json.decision_url + ($json.decision_url.includes('?') ? '&' : '?') + 'token=' + $json.token + '&decision=approve') ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;') }}\" style=\"background:#1f7a3d;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none\">Approve</a>\n&nbsp; <a href=\"{{ String(($json.decision_url + ($json.decision_url.includes('?') ? '&' : '?') + 'token=' + $json.token + '&decision=reject') ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;') }}\" style=\"background:#b42318;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none\">Reject</a></p>\n<p>Each link opens a confirmation page. Nothing is recorded until you press the button there. This request expires on {{ String($json.expires_label ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;') }}.</p>",
+        "options": {
+          "appendAttribution": false,
+          "replyTo": "={{ $json.requester_email }}"
+        }
+      },
+      "credentials": {
+        "smtp": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "a1-44",
+      "name": "Release Reminder Claim",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        580,
+        1400
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE approval_requests SET reminded_at = NULL, last_email_error = left($2, 500)\nWHERE id = $1::bigint AND status = 'pending' RETURNING id;",
+        "options": {
+          "queryReplacement": "={{ $('Claim Due Reminders').item.json.id }},{{ $json.error?.message ?? $json.message ?? $json.error ?? 'SMTP send failed' }}",
+          "connectionTimeout": 10
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "name": "Your credential"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Run Once to Create Table": {
+      "main": [
+        [
+          {
+            "node": "Create Approval Table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Approval Request Form": {
+      "main": [
+        [
+          {
+            "node": "Approval Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Approval Settings": {
+      "main": [
+        [
+          {
+            "node": "Validate Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decision Link Opened": {
+      "main": [
+        [
+          {
+            "node": "Check Link",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decision Submitted": {
+      "main": [
+        [
+          {
+            "node": "Check Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every 15 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Expire Overdue Requests",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Claim Due Reminders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Request": {
+      "main": [
+        [
+          {
+            "node": "Request Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Request Valid?": {
+      "main": [
+        [
+          {
+            "node": "Save Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Request Not Valid",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Request": {
+      "main": [
+        [
+          {
+            "node": "Email Approver",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Could Not Save Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Approver": {
+      "main": [
+        [
+          {
+            "node": "Request Sent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Request Not Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Request Not Sent": {
+      "main": [
+        [
+          {
+            "node": "Approver Not Reached",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Link": {
+      "main": [
+        [
+          {
+            "node": "Look Up Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Look Up Request": {
+      "main": [
+        [
+          {
+            "node": "Build Confirmation Page",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Database Unavailable Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Confirmation Page": {
+      "main": [
+        [
+          {
+            "node": "Send Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Decision": {
+      "main": [
+        [
+          {
+            "node": "Record Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Decision": {
+      "main": [
+        [
+          {
+            "node": "Decision Recorded?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Database Unavailable Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decision Recorded?": {
+      "main": [
+        [
+          {
+            "node": "Email Requester Decision",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Result Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Requester Decision": {
+      "main": [
+        [
+          {
+            "node": "Build Result Page",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Save Decision Email Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Decision Email Error": {
+      "main": [
+        [
+          {
+            "node": "Build Result Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Result Page": {
+      "main": [
+        [
+          {
+            "node": "Send Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expire Overdue Requests": {
+      "main": [
+        [
+          {
+            "node": "Any Expired?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Expired?": {
+      "main": [
+        [
+          {
+            "node": "Email Requester Expired",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Email Requester Expired": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Save Expiry Email Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Due Reminders": {
+      "main": [
+        [
+          {
+            "node": "Any Reminders?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Reminders?": {
+      "main": [
+        [
+          {
+            "node": "Email Approver Reminder",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Email Approver Reminder": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Release Reminder Claim",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {}
+}

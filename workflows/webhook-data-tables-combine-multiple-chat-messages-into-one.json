@@ -1,0 +1,1700 @@
+{
+  "name": "Webhook Data Tables Combine Multiple Chat Messages into One",
+  "nodes": [
+    {
+      "id": "b1-1",
+      "name": "Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -760,
+        -440
+      ],
+      "parameters": {
+        "content": "### How it works\n1. **Receive Chat Message** stores each message (`sender_id`, `text`) in a Data Table.\n2. After `debounce_seconds` only the newest message's run goes on, unless the oldest waited `max_wait_seconds`.\n3. **Claim Batch** marks up to `max_messages` unmarked rows, oldest first, in one update, so each message joins one batch; full batches go at once.\n4. Your bot gets the texts in arrival order; delivered rows are deleted. **Retry Every 30 Minutes** resends failed batches; after `max_attempts` one is parked, failing the run for your error workflow.\n\n### Setup\n1. Execute **Run Once to Create Buffer Table** (needs data table create permission).\n2. Attach a Header Auth credential to **Receive Chat Message**.\n3. In your chat workflow, replace the bot with an HTTP Request node POSTing JSON `sender_id` and `text` with that header to the Production URL.\n4. Start your bot sub-workflow with a copy of **When Batch Is Ready (Example Bot)**, publish it and put its id in `bot_workflow_id` (empty runs the example).\n5. In **Buffer Settings** check `buffer_table_name`, `debounce_seconds`, `max_wait_seconds`, `max_messages`, `max_text_length`, `max_attempts`, `retry_after_seconds` (keep it above max wait + debounce). Times are UTC.\n6. Optionally set an error workflow in Workflow Settings. Activate.\n\nCost: one execution per message plus 48 retry runs a day.\n\n### Customization\nEdit the joiner in **Build Combined Message**.\n\nLimits: without locks, two runs may split a burst into two batches, never a message into both. Messages arriving while your bot works form the next batch, which can run alongside it and may be answered first. If releasing or clearing fails, the run fails and rows keep their `batch_id` (not resent; delivered rows stay).",
+        "width": 660,
+        "height": 1340
+      }
+    },
+    {
+      "id": "b1-2",
+      "name": "Setup Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -60,
+        -440
+      ],
+      "parameters": {
+        "content": "## One-time setup\nCreates the buffer Data Table with its six columns (skipped if it exists). Tested on n8n 2.47.7.",
+        "width": 920,
+        "height": 300,
+        "color": 7
+      }
+    },
+    {
+      "id": "b1-3",
+      "name": "Receive Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -60,
+        -100
+      ],
+      "parameters": {
+        "content": "## Receive and store\nn8n answers 403 without the header secret. Checks `sender_id` and `text` (400 if missing or blank), finds the table by its exact name (503 if missing), stores the message and answers 202 (500 if storing fails).",
+        "width": 2440,
+        "height": 460,
+        "color": 7
+      }
+    },
+    {
+      "id": "b1-4",
+      "name": "Debounce Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2420,
+        -100
+      ],
+      "parameters": {
+        "content": "## Wait for a quiet moment\nAfter `debounce_seconds` only the newest message's run goes on, unless the oldest is `max_wait_seconds` old. Full batches of `max_messages` go at once; a smaller rest waits by these rules.",
+        "width": 1120,
+        "height": 460,
+        "color": 7
+      }
+    },
+    {
+      "id": "b1-5",
+      "name": "Retry Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -60,
+        400
+      ],
+      "parameters": {
+        "content": "## Retry every 30 minutes\nTakes messages still unclaimed after `retry_after_seconds` (keep it above max wait + debounce, or a burst can go early): released after a bot failure, or left by a run lost in a restart. Batches per sender, at most `max_messages` each.",
+        "width": 2160,
+        "height": 340,
+        "color": 7
+      }
+    },
+    {
+      "id": "b1-6",
+      "name": "Deliver Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        3580,
+        -100
+      ],
+      "parameters": {
+        "content": "## Claim, combine, deliver\nOne update claims only unclaimed rows. Your bot gets the batch; delivered rows are deleted, failed ones released for retry or parked after `max_attempts`, which fails the run. To resend a parked (`parked-` prefix) or stuck (old, non-empty `batch_id`) batch, clear its `batch_id`.",
+        "width": 2200,
+        "height": 840,
+        "color": 7
+      }
+    },
+    {
+      "id": "b1-7",
+      "name": "Example Bot Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        3580,
+        780
+      ],
+      "parameters": {
+        "content": "## Example bot (input contract)\nYour bot sub-workflow starts with these inputs. `sender_id` tells it whom to answer. Replace **Example Bot Reply** with your bot and reply from there. A batch fails only if this workflow errors (or outputs just an `error` field).",
+        "width": 900,
+        "height": 360,
+        "color": 7
+      }
+    },
+    {
+      "id": "b1-8",
+      "name": "Run Once to Create Buffer Table",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -300
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "b1-9",
+      "name": "Receive Chat Message",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        40
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "chat-message-buffer",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "b1-10",
+      "name": "Retry Every 30 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        540
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 30
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "b1-11",
+      "name": "Buffer Settings",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        220,
+        40
+      ],
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "k1",
+              "name": "buffer_table_name",
+              "type": "string",
+              "value": "chat_message_buffer"
+            },
+            {
+              "id": "k2",
+              "name": "debounce_seconds",
+              "type": "number",
+              "value": 5
+            },
+            {
+              "id": "k3",
+              "name": "max_wait_seconds",
+              "type": "number",
+              "value": 30
+            },
+            {
+              "id": "k4",
+              "name": "max_messages",
+              "type": "number",
+              "value": 10
+            },
+            {
+              "id": "k5",
+              "name": "max_text_length",
+              "type": "number",
+              "value": 4000
+            },
+            {
+              "id": "k6",
+              "name": "bot_workflow_id",
+              "type": "string",
+              "value": ""
+            },
+            {
+              "id": "k7",
+              "name": "max_attempts",
+              "type": "number",
+              "value": 3
+            },
+            {
+              "id": "k8",
+              "name": "retry_after_seconds",
+              "type": "number",
+              "value": 120
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "b1-12",
+      "name": "Setup Run?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        440,
+        40
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "b1-13",
+              "leftValue": "={{ $('Run Once to Create Buffer Table').isExecuted }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "b1-14",
+      "name": "Create Buffer Table",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        660,
+        -300
+      ],
+      "parameters": {
+        "resource": "table",
+        "operation": "create",
+        "tableName": "={{ $('Buffer Settings').first().json.buffer_table_name.trim() }}",
+        "columns": {
+          "column": [
+            {
+              "name": "sender_id",
+              "type": "string"
+            },
+            {
+              "name": "text",
+              "type": "string"
+            },
+            {
+              "name": "received_ms",
+              "type": "number"
+            },
+            {
+              "name": "batch_id",
+              "type": "string"
+            },
+            {
+              "name": "attempts",
+              "type": "number"
+            },
+            {
+              "name": "last_error",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {
+          "createIfNotExists": true
+        }
+      }
+    },
+    {
+      "id": "b1-15",
+      "name": "Check Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        40
+      ],
+      "parameters": {
+        "jsCode": "// Normalises the settings and, for webhook calls, checks the message server-side.\nconst s = $('Buffer Settings').first().json;\nconst num = (v, def, min) => (Number.isFinite(Number(v)) && Number(v) >= min ? Math.floor(Number(v)) : def);\nconst cfg = {\n  table: String(s.buffer_table_name ?? '').trim(),\n  debounce: num(s.debounce_seconds, 5, 1),\n  max_wait: num(s.max_wait_seconds, 30, 1),\n  max_messages: num(s.max_messages, 10, 1),\n  max_text_length: num(s.max_text_length, 4000, 1),\n  max_attempts: num(s.max_attempts, 3, 1),\n  bot_workflow_id: String(s.bot_workflow_id ?? '').trim(),\n  retry_after: num(s.retry_after_seconds, 120, 1),\n};\nif (!$('Receive Chat Message').isExecuted) return [{ json: { ok: true, source: 'schedule', cfg } }];\nconst b = $('Receive Chat Message').first().json.body;\nconst fail = (error) => [{ json: { ok: false, source: 'webhook', error, cfg } }];\nif (!b || typeof b !== 'object' || Array.isArray(b)) return fail('Send a JSON object with sender_id and text.');\nconst sender = typeof b.sender_id === 'string' || typeof b.sender_id === 'number' ? String(b.sender_id).trim() : '';\nif (!sender) return fail('sender_id is required.');\nif (sender.length > 200) return fail('sender_id is longer than 200 characters.');\nconst text = typeof b.text === 'string' ? b.text.trim() : typeof b.text === 'number' ? String(b.text) : '';\nif (!text) return fail('text is required and cannot be empty.');\nif (text.length > cfg.max_text_length) return fail('text is longer than ' + cfg.max_text_length + ' characters.');\nreturn [{ json: { ok: true, source: 'webhook', sender_id: sender, text, received_ms: Date.now(), cfg } }];"
+      }
+    },
+    {
+      "id": "b1-16",
+      "name": "Request Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        880,
+        40
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "b1-17",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "b1-18",
+      "name": "Reject Invalid Message",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1100,
+        200
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ accepted: false, error: $json.error }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      }
+    },
+    {
+      "id": "b1-19",
+      "name": "Find Buffer Table",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "position": [
+        1100,
+        20
+      ],
+      "parameters": {
+        "resource": "table",
+        "operation": "list",
+        "returnAll": true,
+        "options": {
+          "filterName": "={{ $('Check Request').first().json.cfg.table }}"
+        }
+      }
+    },
+    {
+      "id": "b1-20",
+      "name": "Buffer Table Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "executeOnce": true,
+      "position": [
+        1320,
+        20
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "b1-21",
+              "leftValue": "={{ $('Find Buffer Table').all().some((t) => t.json.name === $('Check Request').first().json.cfg.table) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "b1-22",
+      "name": "Caller Waiting?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1320,
+        200
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "b1-23",
+              "leftValue": "={{ $('Check Request').first().json.source === 'webhook' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "b1-24",
+      "name": "Report Missing Table",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1540,
+        200
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ accepted: false, error: 'The buffer data table \"' + $('Check Request').first().json.cfg.table + '\" does not exist. Run the one-time setup.' }) }}",
+        "options": {
+          "responseCode": 503
+        }
+      }
+    },
+    {
+      "id": "b1-25",
+      "name": "From Webhook?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1540,
+        20
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "b1-26",
+              "leftValue": "={{ $('Check Request').first().json.source === 'webhook' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "b1-27",
+      "name": "Add to Buffer",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "onError": "continueErrorOutput",
+      "position": [
+        1760,
+        0
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "insert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Buffer Table').all().find((t) => t.json.name === $('Check Request').first().json.cfg.table).json.id }}"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "sender_id": "={{ $('Check Request').first().json.sender_id }}",
+            "text": "={{ $('Check Request').first().json.text }}",
+            "received_ms": "={{ $('Check Request').first().json.received_ms }}",
+            "batch_id": "",
+            "attempts": "={{ 0 }}",
+            "last_error": ""
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "sender_id",
+              "displayName": "sender_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "text",
+              "displayName": "text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "received_ms",
+              "displayName": "received_ms",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "batch_id",
+              "displayName": "batch_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "attempts",
+              "displayName": "attempts",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "last_error",
+              "displayName": "last_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "b1-28",
+      "name": "Message Stored?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1980,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "b1-29",
+              "leftValue": "={{ $json.id !== undefined && $json.sender_id === $('Check Request').first().json.sender_id && $json.received_ms === $('Check Request').first().json.received_ms }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "b1-30",
+      "name": "Report Store Failure",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1980,
+        200
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ accepted: false, error: 'The message could not be stored. Please send it again.' }) }}",
+        "options": {
+          "responseCode": 500
+        }
+      }
+    },
+    {
+      "id": "b1-31",
+      "name": "Accept Message",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        2200,
+        0
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ accepted: true, id: $json.id, sender_id: $('Check Request').first().json.sender_id, debounce_seconds: $('Check Request').first().json.cfg.debounce }) }}",
+        "options": {
+          "responseCode": 202
+        }
+      }
+    },
+    {
+      "id": "b1-32",
+      "name": "Wait for Quiet Period",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        2700,
+        0
+      ],
+      "parameters": {
+        "amount": "={{ $('Check Request').first().json.cfg.debounce }}",
+        "unit": "seconds"
+      }
+    },
+    {
+      "id": "b1-33",
+      "name": "Load Sender Waiting Messages",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "position": [
+        2920,
+        0
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Buffer Table').all().find((t) => t.json.name === $('Check Request').first().json.cfg.table).json.id }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "sender_id",
+              "condition": "eq",
+              "keyValue": "={{ $('Check Request').first().json.sender_id }}"
+            },
+            {
+              "keyName": "batch_id",
+              "condition": "isEmpty"
+            }
+          ]
+        },
+        "returnAll": true
+      }
+    },
+    {
+      "id": "b1-34",
+      "name": "Decide Who Sends",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3140,
+        0
+      ],
+      "parameters": {
+        "jsCode": "// Latest message wins: after the quiet period only the run of the sender's newest waiting\n// message sends, unless the oldest has waited max_wait. A batch never holds more than\n// max_messages: full batches (oldest first) go at once, a smaller rest follows the rules above.\nconst c = $('Check Request').first().json;\nconst max = c.cfg.max_messages;\nconst me = $('Add to Buffer').first().json.id;\nconst rows = $input.all().map((i) => i.json).filter((r) => r.id !== undefined).sort((a, b) => a.id - b.id);\n// id plus arrival time: a deleted row's id can be given to a newer message\nif (!rows.some((r) => r.id === me && Number(r.received_ms) === c.received_ms)) return []; // already sent in an earlier batch\nconst out = [];\nfor (let i = 0; i < rows.length; i += max) {\n  const chunk = rows.slice(i, i + max);\n  const last = chunk[chunk.length - 1];\n  const reason = chunk.length === max ? 'max_messages'\n    : Date.now() - Number(chunk[0].received_ms) >= c.cfg.max_wait * 1000 ? 'max_wait'\n    : last.id === me ? 'quiet' : '';\n  if (!reason) break; // a newer message is waiting; its run decides\n  out.push({ json: { sender_id: c.sender_id, from_id: chunk[0].id, up_to_id: last.id, token: $execution.id + '-' + (out.length + 1), reason } });\n}\nreturn out;"
+      }
+    },
+    {
+      "id": "b1-35",
+      "name": "Load Overdue Messages",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "position": [
+        1760,
+        540
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Buffer Table').all().find((t) => t.json.name === $('Check Request').first().json.cfg.table).json.id }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "batch_id",
+              "condition": "isEmpty"
+            },
+            {
+              "keyName": "received_ms",
+              "condition": "lt",
+              "keyValue": "={{ Date.now() - $('Check Request').first().json.cfg.retry_after * 1000 }}"
+            }
+          ]
+        },
+        "returnAll": true
+      }
+    },
+    {
+      "id": "b1-36",
+      "name": "Group Overdue by Sender",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        540
+      ],
+      "parameters": {
+        "jsCode": "// Batches of at most max_messages per sender for messages left waiting too long\n// (released after a bot failure, or left by a run lost in a restart).\nconst max = $('Check Request').first().json.cfg.max_messages;\nconst rows = $input.all().map((i) => i.json).filter((r) => r.id !== undefined && r.sender_id !== undefined).sort((a, b) => a.id - b.id);\nconst bySender = new Map();\nfor (const r of rows) bySender.set(r.sender_id, [...(bySender.get(r.sender_id) || []), r]);\nconst out = [];\nfor (const [sender_id, list] of bySender) for (let i = 0; i < list.length; i += max) {\n  const chunk = list.slice(i, i + max);\n  out.push({ json: { sender_id, from_id: chunk[0].id, up_to_id: chunk[chunk.length - 1].id, token: $execution.id + '-' + (out.length + 1), reason: 'retry' } });\n}\nreturn out;"
+      }
+    },
+    {
+      "id": "b1-37",
+      "name": "Loop Over Batches",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        3640,
+        180
+      ],
+      "parameters": {
+        "options": {}
+      }
+    },
+    {
+      "id": "b1-38",
+      "name": "Claim Batch",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1000,
+      "onError": "continueRegularOutput",
+      "position": [
+        3860,
+        200
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Buffer Table').all().find((t) => t.json.name === $('Check Request').first().json.cfg.table).json.id }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "sender_id",
+              "condition": "eq",
+              "keyValue": "={{ $json.sender_id }}"
+            },
+            {
+              "keyName": "batch_id",
+              "condition": "isEmpty"
+            },
+            {
+              "keyName": "id",
+              "condition": "gte",
+              "keyValue": "={{ $json.from_id }}"
+            },
+            {
+              "keyName": "id",
+              "condition": "lte",
+              "keyValue": "={{ $json.up_to_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "batch_id": "={{ $json.token }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "batch_id",
+              "displayName": "batch_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "b1-39",
+      "name": "Load Claimed Messages",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1000,
+      "onError": "continueRegularOutput",
+      "position": [
+        4080,
+        200
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Buffer Table').all().find((t) => t.json.name === $('Check Request').first().json.cfg.table).json.id }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "batch_id",
+              "condition": "eq",
+              "keyValue": "={{ $('Loop Over Batches').first().json.token }}"
+            }
+          ]
+        },
+        "returnAll": true
+      }
+    },
+    {
+      "id": "b1-40",
+      "name": "Build Combined Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4300,
+        200
+      ],
+      "parameters": {
+        "jsCode": "// Joins the claimed messages in arrival order (row id) into the bot's input.\nconst batch = $('Loop Over Batches').first().json;\nconst rows = $input.all().map((i) => i.json).filter((r) => r.id !== undefined && r.batch_id === batch.token).sort((a, b) => a.id - b.id);\nif (!rows.length) return [{ json: { claimed: false, sender_id: batch.sender_id } }];\nconst iso = (ms) => new Date(Number(ms)).toISOString();\nreturn [{ json: {\n  claimed: true,\n  sender_id: rows[0].sender_id,\n  combined_text: rows.map((r) => r.text).join('\\n'),\n  message_count: rows.length,\n  messages: rows.map((r) => ({ id: r.id, text: r.text, received_at: iso(r.received_ms) })),\n  first_received_at: iso(rows[0].received_ms),\n  last_received_at: iso(rows[rows.length - 1].received_ms),\n  batch_id: batch.token,\n  reason: batch.reason,\n  attempts: Math.max(0, ...rows.map((r) => Number(r.attempts) || 0)),\n} }];"
+      }
+    },
+    {
+      "id": "b1-41",
+      "name": "Anything Claimed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        4520,
+        200
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "b1-42",
+              "leftValue": "={{ $json.claimed }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "b1-43",
+      "name": "Send to Bot Workflow",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput",
+      "position": [
+        4740,
+        200
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Check Request').first().json.cfg.bot_workflow_id || $workflow.id }}"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "b1-44",
+      "name": "Clear Delivered Messages",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1000,
+      "onError": "continueRegularOutput",
+      "position": [
+        5400,
+        60
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "deleteRows",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Buffer Table').all().find((t) => t.json.name === $('Check Request').first().json.cfg.table).json.id }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "batch_id",
+              "condition": "eq",
+              "keyValue": "={{ $('Build Combined Message').first().json.batch_id }}"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "b1-45",
+      "name": "Check Bot Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4960,
+        200
+      ],
+      "parameters": {
+        "jsCode": "// The bot's own output is not used, so a bot ending with no items still counts as delivered.\n// Send to Bot Workflow continues with one item holding only { error } when the bot workflow failed or could not start.\nconst items = $input.all().map((i) => i.json);\nconst failed = items.length === 1 && Object.keys(items[0]).length === 1 && items[0].error !== undefined;\nreturn [{ json: { batch_id: $('Build Combined Message').first().json.batch_id, bot_failed: failed, bot_error: failed ? items[0].error : null } }];"
+      }
+    },
+    {
+      "id": "b1-46",
+      "name": "Bot Failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        5180,
+        200
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "b1-47",
+              "leftValue": "={{ $json.bot_failed }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "b1-48",
+      "name": "Count Failed Attempt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "executeOnce": true,
+      "position": [
+        5400,
+        360
+      ],
+      "parameters": {
+        "jsCode": "// The bot workflow failed: release the batch for a retry, or park it after max_attempts.\nconst b = $('Build Combined Message').first().json;\nconst max = $('Check Request').first().json.cfg.max_attempts;\nconst e = $input.first().json.bot_error;\nconst error = String((e && typeof e === 'object' ? e.message || JSON.stringify(e) : e) || 'unknown error').slice(0, 500);\nconst attempts = b.attempts + 1;\nconst park = attempts >= max;\nreturn [{ json: { batch_id: b.batch_id, new_batch_id: park ? 'parked-' + b.batch_id : '', attempts, park, last_error: error } }];"
+      }
+    },
+    {
+      "id": "b1-49",
+      "name": "Release or Park Batch",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1000,
+      "onError": "continueRegularOutput",
+      "position": [
+        5620,
+        360
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Buffer Table').all().find((t) => t.json.name === $('Check Request').first().json.cfg.table).json.id }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "batch_id",
+              "condition": "eq",
+              "keyValue": "={{ $json.batch_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "batch_id": "={{ $json.new_batch_id }}",
+            "attempts": "={{ $json.attempts }}",
+            "last_error": "={{ $json.last_error }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "batch_id",
+              "displayName": "batch_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "attempts",
+              "displayName": "attempts",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "last_error",
+              "displayName": "last_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "b1-50",
+      "name": "Find Parked or Stuck Batches",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3860,
+        560
+      ],
+      "parameters": {
+        "jsCode": "// Runs once every batch is handled. A parked batch, or one that could not be released or\n// cleared (its rows keep their batch_id), makes the run fail so it reaches your error workflow.\n// A failed Data Table step continues with { error } or with its own input item (the fields of\n// Count Failed Attempt or Check Bot Result); both are recognised here.\nconst items = $input.all().map((i) => i.json);\nconst list = (a) => [...new Set(a)].join(', ');\nconst tokens = ($('Decide Who Sends').isExecuted ? $('Decide Who Sends') : $('Group Overdue by Sender')).all().map((i) => i.json.token);\nconst parked = items.filter((j) => j.id !== undefined && String(j.batch_id).startsWith('parked-')).map((j) => j.batch_id);\nconst notReleased = items.filter((j) => j.park !== undefined).map((j) => j.batch_id);\nconst notCleared = items.filter((j) => j.bot_failed !== undefined).map((j) => j.batch_id);\nconst errors = items.filter((j) => j.id === undefined && j.error !== undefined).map((j) => String(j.error.message || j.error));\nconst parts = [];\nif (parked.length) parts.push('Parked after max_attempts: batch_id ' + list(parked) + '. Fix the cause, then clear batch_id to resend.');\nif (notReleased.length) parts.push('Could not release failed batch ' + list(notReleased) + '; its rows keep their batch_id and are not resent.');\nif (notCleared.length) parts.push('Could not delete delivered batch ' + list(notCleared) + '; its rows stay with their batch_id.');\nif (errors.length) parts.push('A batch of this run (batch_id ' + list(tokens) + ') could not be released or cleared; its rows keep their batch_id: ' + list(errors).slice(0, 400));\nreturn parts.length ? [{ json: { message: parts.join(' ') } }] : [];"
+      }
+    },
+    {
+      "id": "b1-51",
+      "name": "Fail Run for Parked or Stuck Batches",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        4080,
+        560
+      ],
+      "parameters": {
+        "errorType": "errorMessage",
+        "errorMessage": "={{ $json.message }}"
+      }
+    },
+    {
+      "id": "b1-52",
+      "name": "When Batch Is Ready (Example Bot)",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        3640,
+        940
+      ],
+      "parameters": {
+        "inputSource": "workflowInputs",
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "sender_id",
+              "type": "string"
+            },
+            {
+              "name": "combined_text",
+              "type": "string"
+            },
+            {
+              "name": "message_count",
+              "type": "number"
+            },
+            {
+              "name": "messages",
+              "type": "array"
+            },
+            {
+              "name": "first_received_at",
+              "type": "string"
+            },
+            {
+              "name": "last_received_at",
+              "type": "string"
+            },
+            {
+              "name": "batch_id",
+              "type": "string"
+            },
+            {
+              "name": "reason",
+              "type": "string"
+            },
+            {
+              "name": "attempts",
+              "type": "number"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "b1-53",
+      "name": "Example Bot Reply",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        3860,
+        940
+      ],
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "r1",
+              "name": "sender_id",
+              "type": "string",
+              "value": "={{ $json.sender_id }}"
+            },
+            {
+              "id": "r2",
+              "name": "reply",
+              "type": "string",
+              "value": "=Thanks! I read your {{ $json.message_count }} message(s) together: {{ $json.combined_text }}"
+            }
+          ]
+        },
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Run Once to Create Buffer Table": {
+      "main": [
+        [
+          {
+            "node": "Buffer Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Receive Chat Message": {
+      "main": [
+        [
+          {
+            "node": "Buffer Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retry Every 30 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Buffer Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buffer Settings": {
+      "main": [
+        [
+          {
+            "node": "Setup Run?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Setup Run?": {
+      "main": [
+        [
+          {
+            "node": "Create Buffer Table",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Check Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Request": {
+      "main": [
+        [
+          {
+            "node": "Request Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Request Valid?": {
+      "main": [
+        [
+          {
+            "node": "Find Buffer Table",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reject Invalid Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Buffer Table": {
+      "main": [
+        [
+          {
+            "node": "Buffer Table Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buffer Table Found?": {
+      "main": [
+        [
+          {
+            "node": "From Webhook?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Caller Waiting?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Caller Waiting?": {
+      "main": [
+        [
+          {
+            "node": "Report Missing Table",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "From Webhook?": {
+      "main": [
+        [
+          {
+            "node": "Add to Buffer",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Load Overdue Messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add to Buffer": {
+      "main": [
+        [
+          {
+            "node": "Message Stored?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Message Stored?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Message Stored?": {
+      "main": [
+        [
+          {
+            "node": "Accept Message",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Report Store Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Accept Message": {
+      "main": [
+        [
+          {
+            "node": "Wait for Quiet Period",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait for Quiet Period": {
+      "main": [
+        [
+          {
+            "node": "Load Sender Waiting Messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Sender Waiting Messages": {
+      "main": [
+        [
+          {
+            "node": "Decide Who Sends",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decide Who Sends": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Overdue Messages": {
+      "main": [
+        [
+          {
+            "node": "Group Overdue by Sender",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Group Overdue by Sender": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Batches": {
+      "main": [
+        [
+          {
+            "node": "Find Parked or Stuck Batches",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Claim Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Parked or Stuck Batches": {
+      "main": [
+        [
+          {
+            "node": "Fail Run for Parked or Stuck Batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Batch": {
+      "main": [
+        [
+          {
+            "node": "Load Claimed Messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Claimed Messages": {
+      "main": [
+        [
+          {
+            "node": "Build Combined Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Combined Message": {
+      "main": [
+        [
+          {
+            "node": "Anything Claimed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anything Claimed?": {
+      "main": [
+        [
+          {
+            "node": "Send to Bot Workflow",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Loop Over Batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send to Bot Workflow": {
+      "main": [
+        [
+          {
+            "node": "Check Bot Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Bot Result": {
+      "main": [
+        [
+          {
+            "node": "Bot Failed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Bot Failed?": {
+      "main": [
+        [
+          {
+            "node": "Count Failed Attempt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Clear Delivered Messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clear Delivered Messages": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Count Failed Attempt": {
+      "main": [
+        [
+          {
+            "node": "Release or Park Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Release or Park Batch": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When Batch Is Ready (Example Bot)": {
+      "main": [
+        [
+          {
+            "node": "Example Bot Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {}
+}

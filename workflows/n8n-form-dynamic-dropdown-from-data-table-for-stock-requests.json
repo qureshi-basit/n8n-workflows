@@ -1,0 +1,1487 @@
+{
+  "name": "n8n Form Dynamic Dropdown from Data Table for Stock Requests",
+  "nodes": [
+    {
+      "id": "s2-1",
+      "name": "Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1100,
+        -420
+      ],
+      "parameters": {
+        "content": "### How it works\n1. **Stock Request Form** (login required) asks for name and email.\n2. **Build Item Page** lists each active, in-stock item as `#id · name · stock` on **Choose Item and Quantity**, a Form page built from JSON on every visit.\n3. **Check Request** re-reads the item by its `#id` and checks the quantity: a whole number from 1 to the stock and `max_quantity_per_request`. Stale or edited choices get the page again with the reason (up to `max_attempts` tries).\n4. **Take Stock** only writes if the stock is unchanged since the check, so the last units cannot be taken twice.\n5. The request is logged; the requester gets a confirmation page and email receipt.\n6. Stock at or below an item's `low_stock_threshold` emails the stock keeper once; `low_alert_sent` blocks repeats until a request finds the item restocked above it.\n\n### Setup\n1. Execute **Run Once to Create Tables** (needs permission to create data tables), then add items with `name`, `unit`, `stock`, `low_stock_threshold` (empty = no alert) and `active` ticked. The workflow fills `low_alert_sent` and `change_token`.\n2. Attach a Basic Auth credential to **Stock Request Form** and an SMTP credential to both email nodes.\n3. In **Stock Request Settings** set `stock_table_name`, `log_table_name`, `stock_keeper_email`, `from_email` (an address your SMTP account may send from), `max_quantity_per_request`, `max_attempts`.\n4. Set the Workflow settings timezone, activate, and share the Production URL of **Stock Request Form**.\n\n### Customization\nUntick `active` to hide an item without deleting it.\n\nLimits: a failed log write still takes the stock (the page says so). A failed alert email clears the flag so the next request retries (unless clearing fails too). Deleting a table mid-request stops that request.",
+        "width": 600,
+        "height": 1300
+      }
+    },
+    {
+      "id": "s2-2",
+      "name": "Setup Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -440,
+        -420
+      ],
+      "parameters": {
+        "content": "## One-time setup\nCreates the stock table and the request log table (skipped if they exist).",
+        "width": 900,
+        "height": 280,
+        "color": 7
+      }
+    },
+    {
+      "id": "s2-3",
+      "name": "Requester Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -440,
+        -100
+      ],
+      "parameters": {
+        "content": "## Who is asking\nName and email are checked, then both data tables are found by their exact names.",
+        "width": 1580,
+        "height": 600,
+        "color": 7
+      }
+    },
+    {
+      "id": "s2-4",
+      "name": "Item Page Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1160,
+        -100
+      ],
+      "parameters": {
+        "content": "## Build the item page\nOnly active items with stock are listed. The page is a Form node defined by JSON, rebuilt on every visit.",
+        "width": 900,
+        "height": 600,
+        "color": 7
+      }
+    },
+    {
+      "id": "s2-5",
+      "name": "Check Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2100,
+        -100
+      ],
+      "parameters": {
+        "content": "## Re-check and take stock\nThe choice is checked against the current row. Take Stock only writes if the stock has not changed since the check.",
+        "width": 1120,
+        "height": 760,
+        "color": 7
+      }
+    },
+    {
+      "id": "s2-6",
+      "name": "Finish Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        3260,
+        -100
+      ],
+      "parameters": {
+        "content": "## Log, alert and receipt\nThe stock keeper is emailed once each time stock falls to the alert level or below. The page says if the log write or the receipt failed.",
+        "width": 1420,
+        "height": 760,
+        "color": 7
+      }
+    },
+    {
+      "id": "s2-7",
+      "name": "Run Once to Create Tables",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -380,
+        -260
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "s2-8",
+      "name": "Stock Request Form",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.3,
+      "position": [
+        -380,
+        140
+      ],
+      "parameters": {
+        "authentication": "basicAuth",
+        "formTitle": "Request stock",
+        "formDescription": "Tell us who you are. On the next page you choose an item and a quantity.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Your Name",
+              "fieldType": "text",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Your Email",
+              "fieldType": "email",
+              "requiredField": true
+            }
+          ]
+        },
+        "options": {
+          "appendAttribution": false,
+          "path": "stock-request",
+          "buttonLabel": "Next"
+        }
+      },
+      "credentials": {
+        "httpBasicAuth": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "s2-9",
+      "name": "Stock Request Settings",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -160,
+        140
+      ],
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": true,
+        "include": "all",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "k1",
+              "name": "stock_table_name",
+              "type": "string",
+              "value": "stock_request_items"
+            },
+            {
+              "id": "k2",
+              "name": "log_table_name",
+              "type": "string",
+              "value": "stock_request_log"
+            },
+            {
+              "id": "k3",
+              "name": "stock_keeper_email",
+              "type": "string",
+              "value": "stock-keeper@example.com"
+            },
+            {
+              "id": "k4",
+              "name": "from_email",
+              "type": "string",
+              "value": "Stock Room <stock-room@example.com>"
+            },
+            {
+              "id": "k5",
+              "name": "max_quantity_per_request",
+              "type": "number",
+              "value": 50
+            },
+            {
+              "id": "k6",
+              "name": "max_attempts",
+              "type": "number",
+              "value": 3
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "s2-10",
+      "name": "Setup Run?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        60,
+        140
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "s2-11",
+              "leftValue": "={{ $('Run Once to Create Tables').isExecuted }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "s2-12",
+      "name": "Create Stock Table",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        60,
+        -260
+      ],
+      "parameters": {
+        "resource": "table",
+        "operation": "create",
+        "tableName": "={{ $('Stock Request Settings').first().json.stock_table_name.trim() }}",
+        "columns": {
+          "column": [
+            {
+              "name": "name",
+              "type": "string"
+            },
+            {
+              "name": "unit",
+              "type": "string"
+            },
+            {
+              "name": "stock",
+              "type": "number"
+            },
+            {
+              "name": "low_stock_threshold",
+              "type": "number"
+            },
+            {
+              "name": "active",
+              "type": "boolean"
+            },
+            {
+              "name": "low_alert_sent",
+              "type": "boolean"
+            },
+            {
+              "name": "change_token",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {
+          "createIfNotExists": true
+        }
+      }
+    },
+    {
+      "id": "s2-13",
+      "name": "Create Request Log Table",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        280,
+        -260
+      ],
+      "parameters": {
+        "resource": "table",
+        "operation": "create",
+        "tableName": "={{ $('Stock Request Settings').first().json.log_table_name.trim() }}",
+        "columns": {
+          "column": [
+            {
+              "name": "requester_name",
+              "type": "string"
+            },
+            {
+              "name": "requester_email",
+              "type": "string"
+            },
+            {
+              "name": "item_id",
+              "type": "number"
+            },
+            {
+              "name": "item_name",
+              "type": "string"
+            },
+            {
+              "name": "quantity",
+              "type": "number"
+            },
+            {
+              "name": "stock_after",
+              "type": "number"
+            },
+            {
+              "name": "note",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {
+          "createIfNotExists": true
+        }
+      }
+    },
+    {
+      "id": "s2-14",
+      "name": "Check Requester",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        160
+      ],
+      "parameters": {
+        "jsCode": "// Page 1: name and email are required. Whitespace-only input counts as empty.\nconst s = $input.first().json;\nconst name = String(s['Your Name'] ?? '').trim();\nconst email = String(s['Your Email'] ?? '').trim().toLowerCase();\nif (!name) return [{ json: { ok: false, error: 'Please enter your name.' } }];\nif (!/^[^\\s@<>\"']+@[^\\s@<>\"']+\\.[^\\s@<>\"']+$/.test(email)) return [{ json: { ok: false, error: 'Please enter a valid email address.' } }];\nreturn [{ json: { ok: true, name: name.slice(0, 200), email } }];"
+      }
+    },
+    {
+      "id": "s2-15",
+      "name": "Requester OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        500,
+        160
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "s2-16",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "s2-17",
+      "name": "Requester Problem",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.3,
+      "position": [
+        500,
+        320
+      ],
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "text",
+        "completionTitle": "Request not sent",
+        "completionMessage": "={{ $json.error }} Please open the form again.",
+        "options": {}
+      }
+    },
+    {
+      "id": "s2-18",
+      "name": "Find Data Tables",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "position": [
+        780,
+        140
+      ],
+      "parameters": {
+        "resource": "table",
+        "operation": "list",
+        "returnAll": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "s2-19",
+      "name": "Tables Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1000,
+        140
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "s2-20",
+              "leftValue": "={{ ['stock_table_name', 'log_table_name'].every((k) => $('Find Data Tables').all().some((t) => t.json.name === $('Stock Request Settings').first().json[k].trim())) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "s2-21",
+      "name": "Tables Missing",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.3,
+      "position": [
+        1000,
+        340
+      ],
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "text",
+        "completionTitle": "Stock requests are not set up",
+        "completionMessage": "=The data tables \"{{ $('Stock Request Settings').first().json.stock_table_name.trim() }}\" and \"{{ $('Stock Request Settings').first().json.log_table_name.trim() }}\" must both exist. Ask the workflow owner to run the one-time setup. Nothing was taken.",
+        "options": {}
+      }
+    },
+    {
+      "id": "s2-22",
+      "name": "Load In-Stock Items",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "position": [
+        1220,
+        140
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Data Tables').all().find((t) => t.json.name === $('Stock Request Settings').first().json.stock_table_name.trim()).json.id }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "active",
+              "condition": "isTrue"
+            },
+            {
+              "keyName": "stock",
+              "condition": "gt",
+              "keyValue": "={{ 0 }}"
+            }
+          ]
+        },
+        "returnAll": true
+      }
+    },
+    {
+      "id": "s2-23",
+      "name": "Build Item Page",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        140
+      ],
+      "parameters": {
+        "jsCode": "// Turn the in-stock rows into the JSON field list of the item page.\n// n8n dropdown options have no separate value, so each option starts with the stable row id (#12);\n// Check Request reads only that id and ignores the stock number shown in the label.\nconst asNumber = (v) => (v === null || v === undefined || v === '' ? NaN : Number(v));\nconst items = $input.all().map((i) => i.json)\n  .filter((r) => r.id !== undefined && r.active === true && Number.isFinite(asNumber(r.stock)) && asNumber(r.stock) > 0)\n  .sort((a, b) => String(a.name).localeCompare(String(b.name)));\nconst clean = (v) => String(v ?? '').replace(/[<>]/g, '').replace(/\\s+/g, ' ').trim();\nconst options = items.map((r) => ({ option: '#' + r.id + ' · ' + (clean(r.name) || 'Item ' + r.id) + ' · in stock: ' + asNumber(r.stock) + (clean(r.unit) ? ' ' + clean(r.unit) : '') }));\nconst retry = $('Ask Again').isExecuted ? $('Ask Again').last().json : null;\nconst fields = [\n  { fieldLabel: 'Item', fieldType: 'dropdown', requiredField: true, fieldOptions: { values: options } },\n  { fieldLabel: 'Quantity', fieldType: 'number', requiredField: true, placeholder: 'e.g. 2' },\n  { fieldLabel: 'What is it for?', fieldType: 'textarea', placeholder: 'Optional note for the stock keeper' },\n];\nreturn [{ json: {\n  item_count: items.length,\n  form_fields: JSON.stringify(fields),\n  page_description: retry ? retry.reason + ' Please choose again (try ' + (retry.attempt + 1) + ' of ' + retry.max_attempts + ').' : 'Only items in stock right now are listed.',\n} }];"
+      }
+    },
+    {
+      "id": "s2-24",
+      "name": "Any Items in Stock?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1660,
+        140
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "s2-25",
+              "leftValue": "={{ $json.item_count > 0 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "s2-26",
+      "name": "Nothing in Stock",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.3,
+      "position": [
+        1660,
+        340
+      ],
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "text",
+        "completionTitle": "Nothing in stock",
+        "completionMessage": "=No items are in stock right now, so there is nothing to request. Please try again later.",
+        "options": {}
+      }
+    },
+    {
+      "id": "s2-27",
+      "name": "Choose Item and Quantity",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.3,
+      "position": [
+        1880,
+        140
+      ],
+      "parameters": {
+        "operation": "page",
+        "defineForm": "json",
+        "jsonOutput": "={{ $json.form_fields }}",
+        "options": {
+          "formTitle": "Choose an item",
+          "formDescription": "={{ $json.page_description }}",
+          "buttonLabel": "Request"
+        }
+      }
+    },
+    {
+      "id": "s2-28",
+      "name": "Load Chosen Item",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "position": [
+        2160,
+        140
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Data Tables').all().find((t) => t.json.name === $('Stock Request Settings').first().json.stock_table_name.trim()).json.id }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "condition": "eq",
+              "keyValue": "={{ Number((String($json['Item'] ?? '').match(/^#(\\d+) /) || [])[1] || 0) }}"
+            }
+          ]
+        },
+        "returnAll": false,
+        "limit": 1
+      }
+    },
+    {
+      "id": "s2-29",
+      "name": "Check Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "executeOnce": true,
+      "position": [
+        2380,
+        140
+      ],
+      "parameters": {
+        "jsCode": "// Server-side re-check of page 2 against the stock row read a moment ago.\n// Never trusts the dropdown text: only the leading #id is used, and stock comes from the table.\nconst page = $('Choose Item and Quantity').last().json;\nconst row = $input.first().json;\nconst settings = $('Stock Request Settings').first().json;\nconst maxQty = Number(settings.max_quantity_per_request) || 0;\nconst fail = (error) => [{ json: { ok: false, error } }];\nconst match = String(page['Item'] ?? '').match(/^#(\\d+) /);\nif (!match) return fail('That choice is not one of the listed items.');\nconst itemId = Number(match[1]);\nif (row.id !== itemId) return fail('That item is not in the stock list.');\nconst name = String(row.name ?? '').trim() || 'Item ' + row.id;\nif (row.active !== true) return fail(name + ' is no longer available.');\nconst stock = row.stock === null || row.stock === '' ? NaN : Number(row.stock);\nif (!Number.isFinite(stock) || stock <= 0) return fail(name + ' is out of stock now.');\nconst raw = page['Quantity'];\nconst qty = typeof raw === 'number' ? raw : (String(raw ?? '').trim() === '' ? NaN : Number(raw));\nif (!Number.isInteger(qty) || qty < 1) return fail('Please enter a whole number of at least 1.');\nif (maxQty > 0 && qty > maxQty) return fail('You can ask for at most ' + maxQty + ' per request.');\nif (qty > stock) return fail('Only ' + stock + ' of ' + name + ' left, so ' + qty + ' cannot be taken.');\nconst newStock = stock - qty;\nconst thresholdRaw = row.low_stock_threshold;\nconst threshold = thresholdRaw === null || thresholdRaw === undefined || thresholdRaw === '' ? NaN : Number(thresholdRaw);\nlet newFlag = row.low_alert_sent === true;\nlet sendAlert = false;\nif (Number.isFinite(threshold)) {\n  if (newStock > threshold) newFlag = false;\n  else { sendAlert = !newFlag || stock > threshold; newFlag = true; }\n}\nconst requester = $('Check Requester').first().json;\nreturn [{ json: {\n  ok: true, item_id: itemId, item_name: name, unit: String(row.unit ?? '').trim(), quantity: qty,\n  stock_seen: stock, new_stock: newStock, threshold: Number.isFinite(threshold) ? threshold : null,\n  new_flag: newFlag, send_alert: sendAlert,\n  token: $execution.id + '-' + $runIndex,\n  note: String(page['What is it for?'] ?? '').trim().slice(0, 500),\n  requester_name: requester.name, requester_email: requester.email,\n} }];"
+      }
+    },
+    {
+      "id": "s2-30",
+      "name": "Request OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2600,
+        140
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "s2-31",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "s2-32",
+      "name": "Take Stock",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "onError": "continueErrorOutput",
+      "position": [
+        2820,
+        120
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Data Tables').all().find((t) => t.json.name === $('Stock Request Settings').first().json.stock_table_name.trim()).json.id }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "condition": "eq",
+              "keyValue": "={{ $json.item_id }}"
+            },
+            {
+              "keyName": "stock",
+              "condition": "eq",
+              "keyValue": "={{ $json.stock_seen }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "stock": "={{ $json.new_stock }}",
+            "low_alert_sent": "={{ $json.new_flag }}",
+            "change_token": "={{ $json.token }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "stock",
+              "displayName": "stock",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "low_alert_sent",
+              "displayName": "low_alert_sent",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "boolean",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "change_token",
+              "displayName": "change_token",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "s2-33",
+      "name": "Stock Taken?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3040,
+        120
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "s2-34",
+              "leftValue": "={{ $json.change_token === $('Check Request').last().json.token }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "s2-35",
+      "name": "Ask Again",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "executeOnce": true,
+      "position": [
+        2380,
+        460
+      ],
+      "parameters": {
+        "jsCode": "// Why the item page is shown again, and how many tries are left.\nconst c = $('Check Request').last().json;\nconst max = Number($('Stock Request Settings').first().json.max_attempts) || 3;\nconst attempt = $runIndex + 1;\n// A failed Take Stock passes its input item (the Check Request result) on, from either output.\nconst input = $input.first().json;\nconst writeFailed = c.ok && input.ok === true && input.token === c.token;\nconst reason = !c.ok ? c.error\n  : writeFailed ? 'The stock of ' + c.item_name + ' could not be updated, so nothing was taken.'\n  : 'Someone else changed the stock of ' + c.item_name + ' while you were sending this.';\nreturn [{ json: { reason, attempt, max_attempts: max, tries_left: attempt < max } }];"
+      }
+    },
+    {
+      "id": "s2-36",
+      "name": "Tries Left?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2600,
+        460
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "s2-37",
+              "leftValue": "={{ $json.tries_left }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "s2-38",
+      "name": "Request Not Sent",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.3,
+      "position": [
+        2820,
+        540
+      ],
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "text",
+        "completionTitle": "Request not sent",
+        "completionMessage": "=Too many tries. Last problem: {{ $json.reason }} Nothing was taken. Please open the form again.",
+        "options": {}
+      }
+    },
+    {
+      "id": "s2-39",
+      "name": "Log Request",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "onError": "continueErrorOutput",
+      "position": [
+        3340,
+        100
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "insert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Data Tables').all().find((t) => t.json.name === $('Stock Request Settings').first().json.log_table_name.trim()).json.id }}"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "requester_name": "={{ $('Check Request').last().json.requester_name }}",
+            "requester_email": "={{ $('Check Request').last().json.requester_email }}",
+            "item_id": "={{ $('Check Request').last().json.item_id }}",
+            "item_name": "={{ $('Check Request').last().json.item_name }}",
+            "quantity": "={{ $('Check Request').last().json.quantity }}",
+            "stock_after": "={{ $('Check Request').last().json.new_stock }}",
+            "note": "={{ $('Check Request').last().json.note }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "requester_name",
+              "displayName": "requester_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "requester_email",
+              "displayName": "requester_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "item_id",
+              "displayName": "item_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "item_name",
+              "displayName": "item_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "quantity",
+              "displayName": "quantity",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "stock_after",
+              "displayName": "stock_after",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "note",
+              "displayName": "note",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "s2-40",
+      "name": "Needs Low-Stock Alert?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3580,
+        120
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "s2-41",
+              "leftValue": "={{ $('Check Request').last().json.send_alert }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "s2-42",
+      "name": "Email Stock Keeper",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "executeOnce": true,
+      "onError": "continueErrorOutput",
+      "position": [
+        3800,
+        20
+      ],
+      "parameters": {
+        "fromEmail": "={{ $('Stock Request Settings').first().json.from_email }}",
+        "toEmail": "={{ $('Stock Request Settings').first().json.stock_keeper_email }}",
+        "subject": "=Low stock: {{ $('Check Request').last().json.item_name }} ({{ $('Check Request').last().json.new_stock }} left)",
+        "emailFormat": "html",
+        "html": "=<p><b>{{ String($('Check Request').last().json.item_name ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;') }}</b> is low: {{ $('Check Request').last().json.new_stock }} {{ String($('Check Request').last().json.unit ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;') }} left (alert level {{ $('Check Request').last().json.threshold }}).</p>\n<p>Last request: {{ $('Check Request').last().json.quantity }} by {{ String($('Check Request').last().json.requester_name ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;') }} ({{ String($('Check Request').last().json.requester_email ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;') }}) at {{ $now.toFormat('d LLL yyyy, HH:mm ZZZZ') }}.</p>\n<p>You get this email once until the item is restocked above the alert level.</p>",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "smtp": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "s2-43",
+      "name": "Clear Alert Flag",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "onError": "continueRegularOutput",
+      "position": [
+        4040,
+        200
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Data Tables').all().find((t) => t.json.name === $('Stock Request Settings').first().json.stock_table_name.trim()).json.id }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "condition": "eq",
+              "keyValue": "={{ $('Check Request').last().json.item_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "low_alert_sent": "={{ false }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "low_alert_sent",
+              "displayName": "low_alert_sent",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "boolean",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "s2-44",
+      "name": "Email Requester Receipt",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "executeOnce": true,
+      "onError": "continueErrorOutput",
+      "position": [
+        4280,
+        120
+      ],
+      "parameters": {
+        "fromEmail": "={{ $('Stock Request Settings').first().json.from_email }}",
+        "toEmail": "={{ $('Check Request').last().json.requester_email }}",
+        "subject": "=Stock request confirmed: {{ $('Check Request').last().json.quantity }} x {{ $('Check Request').last().json.item_name }}",
+        "emailFormat": "html",
+        "html": "=<p>Hi {{ String($('Check Request').last().json.requester_name ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;') }},</p>\n<p>Your stock request is confirmed.</p>\n<table cellpadding=\"4\">\n<tr><td>Item</td><td><b>{{ String($('Check Request').last().json.item_name ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;') }}</b></td></tr>\n<tr><td>Quantity</td><td>{{ $('Check Request').last().json.quantity }} {{ String($('Check Request').last().json.unit ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;') }}</td></tr>\n<tr><td>Reference</td><td>{{ ($('Log Request').all().map((i) => i.json).find((r) => r.item_id !== undefined && r.requester_email !== undefined)?.id || '') ? '#' + ($('Log Request').all().map((i) => i.json).find((r) => r.item_id !== undefined && r.requester_email !== undefined)?.id || '') : 'not logged' }}</td></tr>\n<tr><td>Time</td><td>{{ $now.toFormat('d LLL yyyy, HH:mm ZZZZ') }}</td></tr>\n{{ $('Check Request').last().json.note ? '<tr><td>Note</td><td>' + String($('Check Request').last().json.note ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;') + '</td></tr>' : '' }}\n</table>",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "smtp": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "s2-45",
+      "name": "Request Confirmed",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.3,
+      "executeOnce": true,
+      "position": [
+        4500,
+        120
+      ],
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "text",
+        "completionTitle": "Request confirmed",
+        "completionMessage": "=You took {{ $('Check Request').last().json.quantity }} {{ $('Check Request').last().json.unit }} of {{ $('Check Request').last().json.item_name }}. {{ $('Check Request').last().json.new_stock }} left. {{ ($('Log Request').all().map((i) => i.json).find((r) => r.item_id !== undefined && r.requester_email !== undefined)?.id || '') ? 'Reference #' + ($('Log Request').all().map((i) => i.json).find((r) => r.item_id !== undefined && r.requester_email !== undefined)?.id || '') + '.' : 'The request could not be written to the log, so please tell the stock keeper.' }} {{ $json.error ? 'The receipt email could not be sent, so please keep this page.' : 'A receipt is on its way to ' + $('Check Request').last().json.requester_email + '.' }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Run Once to Create Tables": {
+      "main": [
+        [
+          {
+            "node": "Stock Request Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stock Request Form": {
+      "main": [
+        [
+          {
+            "node": "Stock Request Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stock Request Settings": {
+      "main": [
+        [
+          {
+            "node": "Setup Run?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Setup Run?": {
+      "main": [
+        [
+          {
+            "node": "Create Stock Table",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Check Requester",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Stock Table": {
+      "main": [
+        [
+          {
+            "node": "Create Request Log Table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Requester": {
+      "main": [
+        [
+          {
+            "node": "Requester OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Requester OK?": {
+      "main": [
+        [
+          {
+            "node": "Find Data Tables",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Requester Problem",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Data Tables": {
+      "main": [
+        [
+          {
+            "node": "Tables Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tables Found?": {
+      "main": [
+        [
+          {
+            "node": "Load In-Stock Items",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Tables Missing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load In-Stock Items": {
+      "main": [
+        [
+          {
+            "node": "Build Item Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Item Page": {
+      "main": [
+        [
+          {
+            "node": "Any Items in Stock?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Items in Stock?": {
+      "main": [
+        [
+          {
+            "node": "Choose Item and Quantity",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Nothing in Stock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Choose Item and Quantity": {
+      "main": [
+        [
+          {
+            "node": "Load Chosen Item",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Chosen Item": {
+      "main": [
+        [
+          {
+            "node": "Check Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Request": {
+      "main": [
+        [
+          {
+            "node": "Request OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Request OK?": {
+      "main": [
+        [
+          {
+            "node": "Take Stock",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Ask Again",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Take Stock": {
+      "main": [
+        [
+          {
+            "node": "Stock Taken?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Ask Again",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stock Taken?": {
+      "main": [
+        [
+          {
+            "node": "Log Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Ask Again",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ask Again": {
+      "main": [
+        [
+          {
+            "node": "Tries Left?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tries Left?": {
+      "main": [
+        [
+          {
+            "node": "Load In-Stock Items",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Request Not Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Request": {
+      "main": [
+        [
+          {
+            "node": "Needs Low-Stock Alert?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Needs Low-Stock Alert?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs Low-Stock Alert?": {
+      "main": [
+        [
+          {
+            "node": "Email Stock Keeper",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Email Requester Receipt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Stock Keeper": {
+      "main": [
+        [
+          {
+            "node": "Email Requester Receipt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Clear Alert Flag",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clear Alert Flag": {
+      "main": [
+        [
+          {
+            "node": "Email Requester Receipt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Requester Receipt": {
+      "main": [
+        [
+          {
+            "node": "Request Confirmed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Request Confirmed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {}
+}

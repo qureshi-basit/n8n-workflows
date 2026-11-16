@@ -12,6 +12,9 @@ Workflows published on [basitq.cloud/workflows](https://basitq.cloud/workflows).
 | [Postgres SMTP Email Queue That Prevents Duplicate Sends](workflows/postgres-smtp-email-queue-that-prevents-duplicate-sends.json) | [basitq.cloud](https://basitq.cloud/workflows/postgres-smtp-email-queue-that-prevents-duplicate-sends) |
 | [CSV Upload to n8n Data Table Without Duplicates](workflows/csv-upload-to-n8n-data-table-without-duplicates.json) | [basitq.cloud](https://basitq.cloud/workflows/csv-upload-to-n8n-data-table-without-duplicates) |
 | [Postgres Sales Dashboard with Period Comparison via Webhook](workflows/postgres-sales-dashboard-with-period-comparison-via-webhook.json) | [basitq.cloud](https://basitq.cloud/workflows/postgres-sales-dashboard-with-period-comparison-via-webhook) |
+| [Postgres SMTP Approval Requests with Approve Reject Email Links](workflows/postgres-smtp-approval-requests-with-approve-reject-email-links.json) | [basitq.cloud](https://basitq.cloud/workflows/postgres-smtp-approval-requests-with-approve-reject-email-links) |
+| [n8n Form Dynamic Dropdown from Data Table for Stock Requests](workflows/n8n-form-dynamic-dropdown-from-data-table-for-stock-requests.json) | [basitq.cloud](https://basitq.cloud/workflows/n8n-form-dynamic-dropdown-from-data-table-for-stock-requests) |
+| [Webhook Data Tables Combine Multiple Chat Messages into One](workflows/webhook-data-tables-combine-multiple-chat-messages-into-one.json) | [basitq.cloud](https://basitq.cloud/workflows/webhook-data-tables-combine-multiple-chat-messages-into-one) |
 
 ## Use one
 

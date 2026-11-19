@@ -1,0 +1,1936 @@
+{
+  "name": "n8n Form Conditional Questions Based on Previous Answers",
+  "nodes": [
+    {
+      "id": "c3-1",
+      "name": "Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1100,
+        -420
+      ],
+      "parameters": {
+        "content": "### How it works\n1. **Service Request Form** asks name, email and service (repair, installation or quote).\n2. **Route by Service** opens one follow-up page: **Repair Details**, **Installation Details** or **Quote Details**, so visitors see only relevant questions.\n3. The server checks each page (empty or unlisted values, date range, unit counts, emergency phone). A mistake re-shows the page (page 1 as **Fix Your Details**) with the reason and answers kept, up to `max_attempts` tries.\n4. **Build Request Record** merges the branches into one data table row.\n5. **Email Team** alerts that service's team, tagging `[URGENT]` emergencies and `[HOT LEAD]` quotes deciding within 2 weeks.\n6. The completion page fits the answers and shows the reference.\n\n### Setup\n1. Execute **Run Once to Create Table** (needs data table create permission).\n2. Attach an SMTP credential to **Email Team**.\n3. In **Service Request Settings** set `requests_table_name`, the three team emails, `from_email` (must be allowed by your SMTP account), `contact_email`, `contact_phone`, `urgent_response`, `standard_response`, `max_attempts`, `max_days_ahead`, `max_units`.\n4. Set the timezone in Workflow settings (dates use it), activate, and share the **Service Request Form** Production URL.\n5. Check rows with `email_failed` true daily: that team was never alerted.\n\n### Customization\nEdit a page with its Check node; new services need a page 1 option, Switch output, page and check.\n\nLimits: public form (bots ignored, no CAPTCHA). A failed email sets `email_failed` (unless that write fails too) and the page asks the customer to call or email you; a failed save is flagged in the email. Visitors who quit midway leave executions Waiting with no time limit; stop old ones in Executions.",
+        "width": 620,
+        "height": 1320
+      }
+    },
+    {
+      "id": "c3-2",
+      "name": "Setup Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -440,
+        -420
+      ],
+      "parameters": {
+        "content": "## One-time setup\nCreates the requests data table. Running it again changes nothing.",
+        "width": 1560,
+        "height": 260,
+        "color": 7
+      }
+    },
+    {
+      "id": "c3-3",
+      "name": "Start Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -440,
+        -120
+      ],
+      "parameters": {
+        "content": "## Page 1: who and what\nIf the requests table is missing, the visitor sees \"Form not available\". Name, email and service are checked on the server; a mistake opens Fix Your Details with the reason and the answers filled in.",
+        "width": 1560,
+        "height": 620,
+        "color": 7
+      }
+    },
+    {
+      "id": "c3-4",
+      "name": "Branch Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1160,
+        -420
+      ],
+      "parameters": {
+        "content": "## One follow-up page per answer\nThe Switch sends each request to its own Form page. Each page has its own check and loops back to itself on a mistake. All branches meet again in one node.",
+        "width": 1180,
+        "height": 1220,
+        "color": 7
+      }
+    },
+    {
+      "id": "c3-5",
+      "name": "Save Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2380,
+        -420
+      ],
+      "parameters": {
+        "content": "## Save, notify, confirm\nOne merged row per request, an email to the team for that service and a completion page written for the answers given.",
+        "width": 1400,
+        "height": 700,
+        "color": 7
+      }
+    },
+    {
+      "id": "c3-6",
+      "name": "Run Once to Create Table",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -380,
+        -300
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "c3-7",
+      "name": "Create Requests Table",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        60,
+        -300
+      ],
+      "parameters": {
+        "resource": "table",
+        "operation": "create",
+        "tableName": "={{ $('Service Request Settings').first().json.requests_table_name.trim() }}",
+        "columns": {
+          "column": [
+            {
+              "name": "service",
+              "type": "string"
+            },
+            {
+              "name": "priority",
+              "type": "string"
+            },
+            {
+              "name": "customer_name",
+              "type": "string"
+            },
+            {
+              "name": "customer_email",
+              "type": "string"
+            },
+            {
+              "name": "customer_phone",
+              "type": "string"
+            },
+            {
+              "name": "topic",
+              "type": "string"
+            },
+            {
+              "name": "description",
+              "type": "string"
+            },
+            {
+              "name": "urgency",
+              "type": "string"
+            },
+            {
+              "name": "preferred_date",
+              "type": "string"
+            },
+            {
+              "name": "units",
+              "type": "number"
+            },
+            {
+              "name": "property_type",
+              "type": "string"
+            },
+            {
+              "name": "budget",
+              "type": "string"
+            },
+            {
+              "name": "decision_timeframe",
+              "type": "string"
+            },
+            {
+              "name": "company",
+              "type": "string"
+            },
+            {
+              "name": "email_failed",
+              "type": "boolean"
+            }
+          ]
+        },
+        "options": {
+          "createIfNotExists": true
+        }
+      }
+    },
+    {
+      "id": "c3-8",
+      "name": "Service Request Form",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.3,
+      "position": [
+        -380,
+        40
+      ],
+      "parameters": {
+        "formTitle": "Request a service",
+        "formDescription": "Tell us who you are and what you need. The next page only asks the questions for that service.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Your Name",
+              "fieldType": "text",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Your Email",
+              "fieldType": "email",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "What do you need?",
+              "fieldType": "dropdown",
+              "requiredField": true,
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "Repair something that stopped working"
+                  },
+                  {
+                    "option": "Install something new"
+                  },
+                  {
+                    "option": "Get a price quote"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "options": {
+          "appendAttribution": false,
+          "path": "service-request",
+          "buttonLabel": "Next",
+          "ignoreBots": true
+        }
+      }
+    },
+    {
+      "id": "c3-9",
+      "name": "Service Request Settings",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -160,
+        40
+      ],
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": true,
+        "include": "all",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "k1",
+              "name": "requests_table_name",
+              "type": "string",
+              "value": "service_requests"
+            },
+            {
+              "id": "k2",
+              "name": "repair_team_email",
+              "type": "string",
+              "value": "repairs@example.com"
+            },
+            {
+              "id": "k3",
+              "name": "installation_team_email",
+              "type": "string",
+              "value": "installations@example.com"
+            },
+            {
+              "id": "k4",
+              "name": "quote_team_email",
+              "type": "string",
+              "value": "sales@example.com"
+            },
+            {
+              "id": "k5",
+              "name": "from_email",
+              "type": "string",
+              "value": "Service Desk <service-desk@example.com>"
+            },
+            {
+              "id": "k6",
+              "name": "contact_email",
+              "type": "string",
+              "value": "help@example.com"
+            },
+            {
+              "id": "k12",
+              "name": "contact_phone",
+              "type": "string",
+              "value": "+1 555 0100"
+            },
+            {
+              "id": "k7",
+              "name": "urgent_response",
+              "type": "string",
+              "value": "within 2 hours"
+            },
+            {
+              "id": "k8",
+              "name": "standard_response",
+              "type": "string",
+              "value": "within 1 business day"
+            },
+            {
+              "id": "k9",
+              "name": "max_attempts",
+              "type": "number",
+              "value": 3
+            },
+            {
+              "id": "k10",
+              "name": "max_days_ahead",
+              "type": "number",
+              "value": 60
+            },
+            {
+              "id": "k11",
+              "name": "max_units",
+              "type": "number",
+              "value": 20
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "c3-10",
+      "name": "Setup Run?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        60,
+        40
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c3-11",
+              "leftValue": "={{ $('Run Once to Create Table').isExecuted }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "c3-12",
+      "name": "Find Requests Table",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "position": [
+        280,
+        60
+      ],
+      "parameters": {
+        "resource": "table",
+        "operation": "list",
+        "returnAll": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "c3-13",
+      "name": "Table Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "executeOnce": true,
+      "position": [
+        500,
+        60
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c3-14",
+              "leftValue": "={{ $('Find Requests Table').all().some((t) => t.json.name === $('Service Request Settings').first().json.requests_table_name.trim()) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "c3-15",
+      "name": "Requests Not Set Up",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.3,
+      "position": [
+        500,
+        280
+      ],
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "text",
+        "completionTitle": "Form not available",
+        "completionMessage": "=This form is not set up yet, so your request was not sent. Please email {{ $('Service Request Settings').first().json.contact_email }} instead.",
+        "options": {}
+      }
+    },
+    {
+      "id": "c3-16",
+      "name": "Check Contact Details",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        60
+      ],
+      "parameters": {
+        "jsCode": "// Page 1, or its retry page. Every field is checked here on the server; whitespace-only counts as empty.\nconst page = $('Fix Your Details').isExecuted ? $('Fix Your Details').last().json : $('Service Request Form').first().json;\nconst prefill = Object.fromEntries([\"Your Name\",\"Your Email\",\"What do you need?\"].map((k) => [k, String(page[k] ?? '')]));\nconst s = $('Service Request Settings').first().json;\nconst max = Number(s.max_attempts) || 3;\nconst attempt = $runIndex + 1;\nconst text = (v) => String(v ?? '').replace(/\\s+/g, ' ').trim();\nconst errors = [];\nconst result = (extra) => {\n  const ok = errors.length === 0;\n  return [{ json: { ok, retry: !ok && attempt < max, give_up: !ok && attempt >= max, error: errors.join(' '), attempt, max_attempts: max, prefill, ...extra } }];\n};\n// Page 1 choices and the branch each one opens. Keep in sync with the form's options and Route by Service.\nconst SERVICES = {\"Repair something that stopped working\":\"repair\",\"Install something new\":\"installation\",\"Get a price quote\":\"quote\"};\nconst name = text(page['Your Name']);\nconst email = text(page['Your Email']).toLowerCase();\nconst choice = text(page['What do you need?']);\nif (!name) errors.push('Please enter your name.');\nelse if (name.length > 100) errors.push('Please keep your name under 100 characters.');\nif (email.length > 254 || !/^[^\\s@<>\"']+@[^\\s@<>\"']+\\.[^\\s@<>\"']+$/.test(email)) errors.push('Please enter a valid email address.');\nif (!Object.hasOwn(SERVICES, choice)) errors.push('Please choose what you need from the list.');\nreturn result({ name, email, service: SERVICES[choice] || '', service_choice: choice });"
+      }
+    },
+    {
+      "id": "c3-17",
+      "name": "Contact Details OK?",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        940,
+        60
+      ],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "c3-18",
+                    "leftValue": "={{ $json.ok }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Valid"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "c3-19",
+                    "leftValue": "={{ $json.retry }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Ask Again"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "c3-20",
+                    "leftValue": "={{ $json.give_up }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Give Up"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "c3-21",
+      "name": "Fix Your Details",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.3,
+      "position": [
+        940,
+        300
+      ],
+      "parameters": {
+        "operation": "page",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Your Name",
+              "fieldType": "text",
+              "requiredField": true,
+              "defaultValue": "={{ $json.prefill ? $json.prefill[\"Your Name\"] ?? '' : '' }}"
+            },
+            {
+              "fieldLabel": "Your Email",
+              "fieldType": "email",
+              "requiredField": true,
+              "defaultValue": "={{ $json.prefill ? $json.prefill[\"Your Email\"] ?? '' : '' }}"
+            },
+            {
+              "fieldLabel": "What do you need?",
+              "fieldType": "dropdown",
+              "requiredField": true,
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "Repair something that stopped working"
+                  },
+                  {
+                    "option": "Install something new"
+                  },
+                  {
+                    "option": "Get a price quote"
+                  }
+                ]
+              },
+              "defaultValue": "={{ $json.prefill ? $json.prefill[\"What do you need?\"] ?? '' : '' }}"
+            }
+          ]
+        },
+        "options": {
+          "formTitle": "Check your details",
+          "formDescription": "={{ $json.error }} Please correct it and send again (try {{ $json.attempt + 1 }} of {{ $json.max_attempts }}).",
+          "buttonLabel": "Next"
+        }
+      }
+    },
+    {
+      "id": "c3-22",
+      "name": "Route by Service",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1220,
+        60
+      ],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "c3-23",
+                    "leftValue": "={{ $json.service === 'repair' }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Repair"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "c3-24",
+                    "leftValue": "={{ $json.service === 'installation' }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Installation"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "c3-25",
+                    "leftValue": "={{ $json.service === 'quote' }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Quote"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "c3-26",
+      "name": "Repair Details",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.3,
+      "position": [
+        1460,
+        -300
+      ],
+      "parameters": {
+        "operation": "page",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "What needs repair?",
+              "fieldType": "dropdown",
+              "requiredField": true,
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "Heating or boiler"
+                  },
+                  {
+                    "option": "Air conditioning"
+                  },
+                  {
+                    "option": "Plumbing"
+                  },
+                  {
+                    "option": "Electrical"
+                  },
+                  {
+                    "option": "Appliance"
+                  },
+                  {
+                    "option": "Something else"
+                  }
+                ]
+              },
+              "defaultValue": "={{ $json.prefill ? $json.prefill[\"What needs repair?\"] ?? '' : '' }}"
+            },
+            {
+              "fieldLabel": "Describe the problem",
+              "fieldType": "textarea",
+              "requiredField": true,
+              "placeholder": "What happened and when did it start?",
+              "defaultValue": "={{ $json.prefill ? $json.prefill[\"Describe the problem\"] ?? '' : '' }}"
+            },
+            {
+              "fieldLabel": "How urgent is it?",
+              "fieldType": "dropdown",
+              "requiredField": true,
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "Emergency: no heat, a water leak or no power"
+                  },
+                  {
+                    "option": "Soon: within a few days"
+                  },
+                  {
+                    "option": "Flexible"
+                  }
+                ]
+              },
+              "defaultValue": "={{ $json.prefill ? $json.prefill[\"How urgent is it?\"] ?? '' : '' }}"
+            },
+            {
+              "fieldLabel": "Phone number",
+              "fieldType": "text",
+              "placeholder": "Needed for emergencies",
+              "defaultValue": "={{ $json.prefill ? $json.prefill[\"Phone number\"] ?? '' : '' }}"
+            },
+            {
+              "fieldLabel": "Preferred visit date",
+              "fieldType": "date",
+              "requiredField": true,
+              "defaultValue": "={{ $json.prefill ? $json.prefill[\"Preferred visit date\"] ?? '' : '' }}"
+            }
+          ]
+        },
+        "options": {
+          "formTitle": "Repair details",
+          "formDescription": "={{ $json.error ? $json.error + ' Please correct it and send again (try ' + ($json.attempt + 1) + ' of ' + $json.max_attempts + ').' : \"A few questions so the right technician comes prepared.\" }}",
+          "buttonLabel": "Send"
+        }
+      }
+    },
+    {
+      "id": "c3-27",
+      "name": "Check Repair Answers",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1700,
+        -300
+      ],
+      "parameters": {
+        "jsCode": "// Repair page: only shown when page 1 said \"Repair\".\nconst page = $input.first().json;\nconst prefill = Object.fromEntries([\"What needs repair?\",\"Describe the problem\",\"How urgent is it?\",\"Phone number\",\"Preferred visit date\"].map((k) => [k, String(page[k] ?? '')]));\nconst s = $('Service Request Settings').first().json;\nconst max = Number(s.max_attempts) || 3;\nconst attempt = $runIndex + 1;\nconst text = (v) => String(v ?? '').replace(/\\s+/g, ' ').trim();\nconst errors = [];\nconst result = (extra) => {\n  const ok = errors.length === 0;\n  return [{ json: { ok, retry: !ok && attempt < max, give_up: !ok && attempt >= max, error: errors.join(' '), attempt, max_attempts: max, prefill, ...extra } }];\n};\n// Dates are read in the workflow timezone, not the server's.\nconst checkDate = (v, what) => {\n  const raw = text(v);\n  const d = DateTime.fromISO(raw, { zone: $now.zoneName });\n  const today = $now.startOf('day');\n  const maxDays = Number(s.max_days_ahead) || 60;\n  if (!raw || !/^\\d{4}-\\d{2}-\\d{2}$/.test(raw) || !d.isValid) { errors.push('Please choose ' + what + '.'); return ''; }\n  if (d < today) { errors.push('The ' + what.replace(/^an? /, '') + ' cannot be in the past.'); return ''; }\n  if (d > today.plus({ days: maxDays })) { errors.push('Please choose ' + what + ' within the next ' + maxDays + ' days.'); return ''; }\n  return d.toISODate();\n};\nconst ITEMS = [\"Heating or boiler\",\"Air conditioning\",\"Plumbing\",\"Electrical\",\"Appliance\",\"Something else\"];\nconst URGENCY = [\"Emergency: no heat, a water leak or no power\",\"Soon: within a few days\",\"Flexible\"];\nconst topic = text(page['What needs repair?']);\nconst description = String(page['Describe the problem'] ?? '').trim();\nconst urgency = text(page['How urgent is it?']);\nconst phone = text(page['Phone number']);\nif (!ITEMS.includes(topic)) errors.push('Please choose what needs repair from the list.');\nif (description.length < 10) errors.push('Please describe the problem in a few words (at least 10 characters).');\nelse if (description.length > 2000) errors.push('Please keep the description under 2000 characters.');\nif (!URGENCY.includes(urgency)) errors.push('Please choose how urgent it is.');\nconst emergency = urgency === URGENCY[0];\nif (phone && (!/^\\+?[0-9 ().-]{7,20}$/.test(phone) || phone.replace(/\\D/g, '').length < 7)) errors.push('Please enter a phone number with at least 7 digits.');\nelse if (emergency && !phone) errors.push('For an emergency we need a phone number so a technician can call you.');\nconst preferred_date = checkDate(page['Preferred visit date'], 'a visit date');\nreturn result({ answers: { topic, description, urgency, phone, preferred_date }, priority: emergency ? 'urgent' : 'normal' });"
+      }
+    },
+    {
+      "id": "c3-28",
+      "name": "Repair Answers OK?",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1940,
+        -300
+      ],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "c3-29",
+                    "leftValue": "={{ $json.ok }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Valid"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "c3-30",
+                    "leftValue": "={{ $json.retry }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Ask Again"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "c3-31",
+                    "leftValue": "={{ $json.give_up }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Give Up"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "c3-32",
+      "name": "Installation Details",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.3,
+      "position": [
+        1460,
+        60
+      ],
+      "parameters": {
+        "operation": "page",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "What should we install?",
+              "fieldType": "dropdown",
+              "requiredField": true,
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "Heat pump"
+                  },
+                  {
+                    "option": "Air conditioner"
+                  },
+                  {
+                    "option": "Water heater"
+                  },
+                  {
+                    "option": "EV charger"
+                  },
+                  {
+                    "option": "Something else"
+                  }
+                ]
+              },
+              "defaultValue": "={{ $json.prefill ? $json.prefill[\"What should we install?\"] ?? '' : '' }}"
+            },
+            {
+              "fieldLabel": "How many units?",
+              "fieldType": "number",
+              "requiredField": true,
+              "placeholder": "e.g. 1",
+              "defaultValue": "={{ $json.prefill ? $json.prefill[\"How many units?\"] ?? '' : '' }}"
+            },
+            {
+              "fieldLabel": "Property type",
+              "fieldType": "dropdown",
+              "requiredField": true,
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "House"
+                  },
+                  {
+                    "option": "Apartment"
+                  },
+                  {
+                    "option": "Business premises"
+                  }
+                ]
+              },
+              "defaultValue": "={{ $json.prefill ? $json.prefill[\"Property type\"] ?? '' : '' }}"
+            },
+            {
+              "fieldLabel": "Preferred installation date",
+              "fieldType": "date",
+              "requiredField": true,
+              "defaultValue": "={{ $json.prefill ? $json.prefill[\"Preferred installation date\"] ?? '' : '' }}"
+            },
+            {
+              "fieldLabel": "Access notes",
+              "fieldType": "textarea",
+              "placeholder": "Parking, gate codes, pets (optional)",
+              "defaultValue": "={{ $json.prefill ? $json.prefill[\"Access notes\"] ?? '' : '' }}"
+            }
+          ]
+        },
+        "options": {
+          "formTitle": "Installation details",
+          "formDescription": "={{ $json.error ? $json.error + ' Please correct it and send again (try ' + ($json.attempt + 1) + ' of ' + $json.max_attempts + ').' : \"Tell us what to install and where.\" }}",
+          "buttonLabel": "Send"
+        }
+      }
+    },
+    {
+      "id": "c3-33",
+      "name": "Check Installation Answers",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1700,
+        60
+      ],
+      "parameters": {
+        "jsCode": "// Installation page: only shown when page 1 said \"Install\".\nconst page = $input.first().json;\nconst prefill = Object.fromEntries([\"What should we install?\",\"How many units?\",\"Property type\",\"Preferred installation date\",\"Access notes\"].map((k) => [k, String(page[k] ?? '')]));\nconst s = $('Service Request Settings').first().json;\nconst max = Number(s.max_attempts) || 3;\nconst attempt = $runIndex + 1;\nconst text = (v) => String(v ?? '').replace(/\\s+/g, ' ').trim();\nconst errors = [];\nconst result = (extra) => {\n  const ok = errors.length === 0;\n  return [{ json: { ok, retry: !ok && attempt < max, give_up: !ok && attempt >= max, error: errors.join(' '), attempt, max_attempts: max, prefill, ...extra } }];\n};\n// Dates are read in the workflow timezone, not the server's.\nconst checkDate = (v, what) => {\n  const raw = text(v);\n  const d = DateTime.fromISO(raw, { zone: $now.zoneName });\n  const today = $now.startOf('day');\n  const maxDays = Number(s.max_days_ahead) || 60;\n  if (!raw || !/^\\d{4}-\\d{2}-\\d{2}$/.test(raw) || !d.isValid) { errors.push('Please choose ' + what + '.'); return ''; }\n  if (d < today) { errors.push('The ' + what.replace(/^an? /, '') + ' cannot be in the past.'); return ''; }\n  if (d > today.plus({ days: maxDays })) { errors.push('Please choose ' + what + ' within the next ' + maxDays + ' days.'); return ''; }\n  return d.toISODate();\n};\nconst ITEMS = [\"Heat pump\",\"Air conditioner\",\"Water heater\",\"EV charger\",\"Something else\"];\nconst PROPERTY = [\"House\",\"Apartment\",\"Business premises\"];\nconst maxUnits = Number(s.max_units) || 20;\nconst topic = text(page['What should we install?']);\nconst rawUnits = page['How many units?'];\nconst units = typeof rawUnits === 'number' ? rawUnits : (text(rawUnits) === '' ? NaN : Number(text(rawUnits)));\nconst property_type = text(page['Property type']);\nconst description = String(page['Access notes'] ?? '').trim();\nif (!ITEMS.includes(topic)) errors.push('Please choose what we should install from the list.');\nif (!Number.isInteger(units) || units < 1) errors.push('Please enter a whole number of units, at least 1.');\nelse if (units > maxUnits) errors.push('For more than ' + maxUnits + ' units please ask for a quote instead.');\nif (!PROPERTY.includes(property_type)) errors.push('Please choose the property type.');\nif (description.length > 1000) errors.push('Please keep the access notes under 1000 characters.');\nconst preferred_date = checkDate(page['Preferred installation date'], 'an installation date');\nreturn result({ answers: { topic, units, property_type, description, preferred_date }, priority: 'normal' });"
+      }
+    },
+    {
+      "id": "c3-34",
+      "name": "Installation Answers OK?",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1940,
+        60
+      ],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "c3-35",
+                    "leftValue": "={{ $json.ok }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Valid"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "c3-36",
+                    "leftValue": "={{ $json.retry }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Ask Again"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "c3-37",
+                    "leftValue": "={{ $json.give_up }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Give Up"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "c3-38",
+      "name": "Quote Details",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.3,
+      "position": [
+        1460,
+        420
+      ],
+      "parameters": {
+        "operation": "page",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "What is the quote for?",
+              "fieldType": "textarea",
+              "requiredField": true,
+              "placeholder": "Rooms, sizes, current equipment",
+              "defaultValue": "={{ $json.prefill ? $json.prefill[\"What is the quote for?\"] ?? '' : '' }}"
+            },
+            {
+              "fieldLabel": "Budget",
+              "fieldType": "dropdown",
+              "requiredField": true,
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "Under $1,000"
+                  },
+                  {
+                    "option": "$1,000 to $5,000"
+                  },
+                  {
+                    "option": "Over $5,000"
+                  },
+                  {
+                    "option": "Not sure yet"
+                  }
+                ]
+              },
+              "defaultValue": "={{ $json.prefill ? $json.prefill[\"Budget\"] ?? '' : '' }}"
+            },
+            {
+              "fieldLabel": "When will you decide?",
+              "fieldType": "dropdown",
+              "requiredField": true,
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "Within 2 weeks"
+                  },
+                  {
+                    "option": "Within 3 months"
+                  },
+                  {
+                    "option": "Just comparing prices"
+                  }
+                ]
+              },
+              "defaultValue": "={{ $json.prefill ? $json.prefill[\"When will you decide?\"] ?? '' : '' }}"
+            },
+            {
+              "fieldLabel": "Company name",
+              "fieldType": "text",
+              "placeholder": "Optional",
+              "defaultValue": "={{ $json.prefill ? $json.prefill[\"Company name\"] ?? '' : '' }}"
+            }
+          ]
+        },
+        "options": {
+          "formTitle": "Quote details",
+          "formDescription": "={{ $json.error ? $json.error + ' Please correct it and send again (try ' + ($json.attempt + 1) + ' of ' + $json.max_attempts + ').' : \"Tell us what you would like priced.\" }}",
+          "buttonLabel": "Send"
+        }
+      }
+    },
+    {
+      "id": "c3-39",
+      "name": "Check Quote Answers",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1700,
+        420
+      ],
+      "parameters": {
+        "jsCode": "// Quote page: only shown when page 1 said \"Quote\".\nconst page = $input.first().json;\nconst prefill = Object.fromEntries([\"What is the quote for?\",\"Budget\",\"When will you decide?\",\"Company name\"].map((k) => [k, String(page[k] ?? '')]));\nconst s = $('Service Request Settings').first().json;\nconst max = Number(s.max_attempts) || 3;\nconst attempt = $runIndex + 1;\nconst text = (v) => String(v ?? '').replace(/\\s+/g, ' ').trim();\nconst errors = [];\nconst result = (extra) => {\n  const ok = errors.length === 0;\n  return [{ json: { ok, retry: !ok && attempt < max, give_up: !ok && attempt >= max, error: errors.join(' '), attempt, max_attempts: max, prefill, ...extra } }];\n};\nconst BUDGET = [\"Under $1,000\",\"$1,000 to $5,000\",\"Over $5,000\",\"Not sure yet\"];\nconst TIMEFRAME = [\"Within 2 weeks\",\"Within 3 months\",\"Just comparing prices\"];\nconst description = String(page['What is the quote for?'] ?? '').trim();\nconst budget = text(page['Budget']);\nconst decision_timeframe = text(page['When will you decide?']);\nconst company = text(page['Company name']);\nif (description.length < 10) errors.push('Please tell us what the quote is for (at least 10 characters).');\nelse if (description.length > 2000) errors.push('Please keep the description under 2000 characters.');\nif (!BUDGET.includes(budget)) errors.push('Please choose a budget range.');\nif (!TIMEFRAME.includes(decision_timeframe)) errors.push('Please choose when you will decide.');\nif (company.length > 100) errors.push('Please keep the company name under 100 characters.');\nreturn result({ answers: { topic: 'Price quote', description, budget, decision_timeframe, company }, priority: decision_timeframe === TIMEFRAME[0] ? 'hot lead' : 'normal' });"
+      }
+    },
+    {
+      "id": "c3-40",
+      "name": "Quote Answers OK?",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1940,
+        420
+      ],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "c3-41",
+                    "leftValue": "={{ $json.ok }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Valid"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "c3-42",
+                    "leftValue": "={{ $json.retry }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Ask Again"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "c3-43",
+                    "leftValue": "={{ $json.give_up }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Give Up"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "c3-44",
+      "name": "Request Not Sent",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.3,
+      "position": [
+        2160,
+        640
+      ],
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "text",
+        "completionTitle": "Request not sent",
+        "completionMessage": "=Too many tries. Last problem: {{ $json.error }} Nothing was saved. Please open the form again.",
+        "options": {}
+      }
+    },
+    {
+      "id": "c3-45",
+      "name": "Build Request Record",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2440,
+        -200
+      ],
+      "parameters": {
+        "jsCode": "// The three branches meet here. Only the branch that ran has data, so read the one that matches the service.\nconst s = $('Service Request Settings').first().json;\nconst c = $('Check Contact Details').last().json;\nconst check = { repair: 'Check Repair Answers', installation: 'Check Installation Answers', quote: 'Check Quote Answers' }[c.service];\nconst b = $(check).last().json;\nconst a = b.answers;\nconst label = { repair: 'Repair', installation: 'Installation', quote: 'Quote' }[c.service];\nconst team = { repair: s.repair_team_email, installation: s.installation_team_email, quote: s.quote_team_email }[c.service];\nconst esc = (v) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;');\nconst record = {\n  service: c.service, priority: b.priority, customer_name: c.name, customer_email: c.email, customer_phone: a.phone || '',\n  topic: a.topic, description: a.description || '', urgency: a.urgency || '', preferred_date: a.preferred_date || '',\n  units: a.units ?? null, property_type: a.property_type || '', budget: a.budget || '', decision_timeframe: a.decision_timeframe || '', company: a.company || '',\n};\nconst rows = [['Service', label], ['Priority', record.priority], ['Name', record.customer_name], ['Email', record.customer_email], ['Phone', record.customer_phone],\n  ['Topic', record.topic], ['Urgency', record.urgency], ['Units', record.units], ['Property', record.property_type], ['Budget', record.budget],\n  ['Decision', record.decision_timeframe], ['Company', record.company], ['Preferred date', record.preferred_date], [c.service === 'installation' ? 'Access notes' : 'Details', record.description]]\n  .filter(([, v]) => v !== '' && v !== null && v !== undefined);\nconst details_html = '<table cellpadding=\"4\">' + rows.map(([k, v]) => '<tr><td><b>' + k + '</b></td><td>' + esc(v).replace(/\\n/g, '<br>') + '</td></tr>').join('') + '</table>';\nreturn [{ json: { ...record, service_label: label, team_email: String(team ?? '').trim(), details_html } }];"
+      }
+    },
+    {
+      "id": "c3-46",
+      "name": "Save Request",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "onError": "continueErrorOutput",
+      "position": [
+        2660,
+        -200
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "insert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Requests Table').all().find((t) => t.json.name === $('Service Request Settings').first().json.requests_table_name.trim()).json.id }}"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "service": "={{ $('Build Request Record').first().json.service }}",
+            "priority": "={{ $('Build Request Record').first().json.priority }}",
+            "customer_name": "={{ $('Build Request Record').first().json.customer_name }}",
+            "customer_email": "={{ $('Build Request Record').first().json.customer_email }}",
+            "customer_phone": "={{ $('Build Request Record').first().json.customer_phone }}",
+            "topic": "={{ $('Build Request Record').first().json.topic }}",
+            "description": "={{ $('Build Request Record').first().json.description }}",
+            "urgency": "={{ $('Build Request Record').first().json.urgency }}",
+            "preferred_date": "={{ $('Build Request Record').first().json.preferred_date }}",
+            "units": "={{ $('Build Request Record').first().json.units }}",
+            "property_type": "={{ $('Build Request Record').first().json.property_type }}",
+            "budget": "={{ $('Build Request Record').first().json.budget }}",
+            "decision_timeframe": "={{ $('Build Request Record').first().json.decision_timeframe }}",
+            "company": "={{ $('Build Request Record').first().json.company }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "service",
+              "displayName": "service",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "priority",
+              "displayName": "priority",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "customer_name",
+              "displayName": "customer_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "customer_email",
+              "displayName": "customer_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "customer_phone",
+              "displayName": "customer_phone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "topic",
+              "displayName": "topic",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "description",
+              "displayName": "description",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "urgency",
+              "displayName": "urgency",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "preferred_date",
+              "displayName": "preferred_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "units",
+              "displayName": "units",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "property_type",
+              "displayName": "property_type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "budget",
+              "displayName": "budget",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "decision_timeframe",
+              "displayName": "decision_timeframe",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "company",
+              "displayName": "company",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "c3-47",
+      "name": "Email Team",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "executeOnce": true,
+      "onError": "continueErrorOutput",
+      "position": [
+        2900,
+        -200
+      ],
+      "parameters": {
+        "fromEmail": "={{ $('Service Request Settings').first().json.from_email }}",
+        "toEmail": "={{ $('Build Request Record').first().json.team_email }}",
+        "subject": "={{ $('Build Request Record').first().json.priority === 'urgent' ? '[URGENT] ' : $('Build Request Record').first().json.priority === 'hot lead' ? '[HOT LEAD] ' : '' }}{{ $('Build Request Record').first().json.service_label }} request{{ ($('Save Request').all().find((i) => i.json.createdAt !== undefined)?.json.id ?? '') ? ' #' + ($('Save Request').all().find((i) => i.json.createdAt !== undefined)?.json.id ?? '') : ' (not saved)' }}: {{ $('Build Request Record').first().json.topic }} from {{ $('Build Request Record').first().json.customer_name }}",
+        "emailFormat": "html",
+        "html": "=<p>New {{ $('Build Request Record').first().json.service_label.toLowerCase() }} request{{ ($('Save Request').all().find((i) => i.json.createdAt !== undefined)?.json.id ?? '') ? ' #' + ($('Save Request').all().find((i) => i.json.createdAt !== undefined)?.json.id ?? '') : '' }} from the service request form.</p>\n{{ ($('Save Request').all().find((i) => i.json.createdAt !== undefined)?.json.id ?? '') ? '' : '<p><b>This request could not be saved to the data table. Please add it by hand.</b></p>' }}\n{{ $('Build Request Record').first().json.details_html }}\n<p>Reply to this email to answer the customer directly.</p>",
+        "options": {
+          "appendAttribution": false,
+          "replyTo": "={{ $('Build Request Record').first().json.customer_email }}"
+        }
+      },
+      "credentials": {
+        "smtp": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "c3-48",
+      "name": "Flag Email Failed",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput",
+      "position": [
+        3140,
+        0
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Requests Table').all().find((t) => t.json.name === $('Service Request Settings').first().json.requests_table_name.trim()).json.id }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "condition": "eq",
+              "keyValue": "={{ Number(($('Save Request').all().find((i) => i.json.createdAt !== undefined)?.json.id ?? '')) || 0 }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "email_failed": "={{ true }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "email_failed",
+              "displayName": "email_failed",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "boolean",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "c3-49",
+      "name": "Write Confirmation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "executeOnce": true,
+      "position": [
+        3380,
+        -200
+      ],
+      "parameters": {
+        "jsCode": "// Completion text written for the answers given, and honest about what happened to the request.\nconst s = $('Service Request Settings').first().json;\nconst r = $('Build Request Record').first().json;\n// Only a stored row has createdAt; a failed insert can leave on either output carrying its input item.\nconst saved = $('Save Request').all().find((i) => i.json.createdAt !== undefined);\nconst ref = saved ? '#' + saved.json.id : '';\n// Flag Email Failed only runs when Email Team took its error output.\nconst emailed = !$('Flag Email Failed').isExecuted;\n// The completion page renders HTML, so every value typed by the visitor is escaped.\nconst esc = (v) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;');\nconst first = esc(r.customer_name.split(' ')[0]);\nconst fmt = (d) => d ? DateTime.fromISO(d, { zone: $now.zoneName }).toFormat('d LLLL yyyy') : '';\nconst reach = 'call ' + esc(s.contact_phone) + ' or email ' + esc(s.contact_email);\nif (!ref && !emailed) return [{ json: { title: 'Request not received', message: 'Sorry, ' + first + ', something went wrong on our side and your request was not recorded. Please ' + reach + ' instead.' } }];\nconst refText = ref ? ' ' + ref : '';\nconst urgent = r.service === 'repair' && r.priority === 'urgent';\n// The team email failed: promise nothing, tell the visitor how to reach the team directly.\nif (!emailed) return [{ json: {\n  title: urgent ? 'Emergency request saved, team not alerted' : r.service_label + ' request saved, team not alerted',\n  message: 'Thanks, ' + first + '. Your ' + (urgent ? 'emergency ' : '') + r.service_label.toLowerCase() + ' request' + refText + ' is saved, but we could not alert our team, so nobody may have seen it yet. Please ' + reach + (urgent ? ' now so a technician can help you.' : ' so we can follow up.'),\n} }];\nlet title, message;\nif (urgent) {\n  title = 'Emergency repair request received';\n  message = 'Thanks, ' + first + '. Your emergency repair request' + refText + ' (' + esc(r.topic) + ') is with our repair team. A technician will call you on ' + esc(r.customer_phone) + ' ' + s.urgent_response + '.';\n} else if (r.service === 'repair') {\n  title = 'Repair request received';\n  message = 'Thanks, ' + first + '. Your repair request' + refText + ' (' + esc(r.topic) + ') is in. Our repair team will email ' + esc(r.customer_email) + ' ' + s.standard_response + ' to book a visit on or near ' + fmt(r.preferred_date) + '.';\n} else if (r.service === 'installation') {\n  title = 'Installation request received';\n  message = 'Thanks, ' + first + '. Your installation request' + refText + ' for ' + r.units + ' x ' + esc(r.topic) + ' (' + esc(r.property_type) + ') is in. Our installation team will contact you ' + s.standard_response + ' to confirm a date close to ' + fmt(r.preferred_date) + '.';\n} else {\n  title = 'Quote request received';\n  message = 'Thanks, ' + first + '. Your quote request' + refText + ' is in. Our sales team will send your quote to ' + esc(r.customer_email) + ' ' + s.standard_response + (r.priority === 'hot lead' ? ', so you have it well before you decide' : '') + '.';\n}\nif (!ref) message += ' Please keep this page: our team has your details but there is no reference number this time.';\nreturn [{ json: { title, message } }];"
+      }
+    },
+    {
+      "id": "c3-50",
+      "name": "Request Received",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.3,
+      "executeOnce": true,
+      "position": [
+        3620,
+        -200
+      ],
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "text",
+        "completionTitle": "={{ $json.title }}",
+        "completionMessage": "={{ $json.message }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Run Once to Create Table": {
+      "main": [
+        [
+          {
+            "node": "Service Request Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Service Request Form": {
+      "main": [
+        [
+          {
+            "node": "Service Request Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Service Request Settings": {
+      "main": [
+        [
+          {
+            "node": "Setup Run?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Setup Run?": {
+      "main": [
+        [
+          {
+            "node": "Create Requests Table",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Find Requests Table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Requests Table": {
+      "main": [
+        [
+          {
+            "node": "Table Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Table Found?": {
+      "main": [
+        [
+          {
+            "node": "Check Contact Details",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Requests Not Set Up",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Contact Details": {
+      "main": [
+        [
+          {
+            "node": "Contact Details OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Contact Details OK?": {
+      "main": [
+        [
+          {
+            "node": "Route by Service",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fix Your Details",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Request Not Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fix Your Details": {
+      "main": [
+        [
+          {
+            "node": "Check Contact Details",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Service": {
+      "main": [
+        [
+          {
+            "node": "Repair Details",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Installation Details",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Quote Details",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Repair Details": {
+      "main": [
+        [
+          {
+            "node": "Check Repair Answers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Repair Answers": {
+      "main": [
+        [
+          {
+            "node": "Repair Answers OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Repair Answers OK?": {
+      "main": [
+        [
+          {
+            "node": "Build Request Record",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Repair Details",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Request Not Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Installation Details": {
+      "main": [
+        [
+          {
+            "node": "Check Installation Answers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Installation Answers": {
+      "main": [
+        [
+          {
+            "node": "Installation Answers OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Installation Answers OK?": {
+      "main": [
+        [
+          {
+            "node": "Build Request Record",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Installation Details",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Request Not Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Quote Details": {
+      "main": [
+        [
+          {
+            "node": "Check Quote Answers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Quote Answers": {
+      "main": [
+        [
+          {
+            "node": "Quote Answers OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Quote Answers OK?": {
+      "main": [
+        [
+          {
+            "node": "Build Request Record",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Quote Details",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Request Not Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Request Record": {
+      "main": [
+        [
+          {
+            "node": "Save Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Request": {
+      "main": [
+        [
+          {
+            "node": "Email Team",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Email Team",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Team": {
+      "main": [
+        [
+          {
+            "node": "Write Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Flag Email Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Flag Email Failed": {
+      "main": [
+        [
+          {
+            "node": "Write Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Confirmation": {
+      "main": [
+        [
+          {
+            "node": "Request Received",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {}
+}

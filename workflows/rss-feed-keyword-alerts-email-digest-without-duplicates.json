@@ -1,0 +1,1349 @@
+{
+  "name": "RSS Feed Keyword Alerts Email Digest Without Duplicates",
+  "nodes": [
+    {
+      "id": "r1-1",
+      "name": "Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1120,
+        -440
+      ],
+      "parameters": {
+        "content": "### How it works\n1. **Check Feeds Every Hour** loads active feeds, keywords and sent-items history from three data tables. An empty or all-inactive feed table stops the run with an error.\n2. Each feed is fetched with a timeout and parsed (RSS 2.0, RSS 1.0, Atom). A failing feed (HTTP error, timeout, invalid XML) is skipped and listed in the digest, or, when nothing is new, the run ends with an error.\n3. Keywords match case-insensitively as whole words or phrases in title and summary. With include keywords an item needs one; any exclude keyword drops it. No include keywords = all items.\n4. Dropped: items already sent, repeated in another feed, or dated older than `retention_days`. Links are compared without http/https, `www.`, #fragment, trailing slash, `utm_*` and click IDs; items without a link by title.\n5. One HTML email grouped by feed, then the items are recorded. Nothing new = no email.\n\n### Setup\nTested on n8n 2.48.5.\n1. Execute **Run Once to Create Tables** (needs permission to create data tables).\n2. Add feeds (`name`, `url`, tick `active`) and keywords (`keyword`, tick `exclude` to block).\n3. Attach your SMTP credential to **Send Digest Email**.\n4. In **RSS Digest Settings** set `recipient_email`, `from_email` (an address your SMTP account may send from), `retention_days`, `max_items_per_digest`, `feed_timeout_seconds` and the table names.\n5. Set the timezone and an Error Workflow in Workflow settings, then activate.\n\n### Customization\nChange the schedule; untick `active` to pause a feed.\n\nLimits: a failed email records nothing, so the items come next run. If recording fails after sending, they are sent once more. An undated item still in a feed can come again if the workflow is paused for longer than `retention_days`.",
+        "width": 620,
+        "height": 1260
+      }
+    },
+    {
+      "id": "r1-2",
+      "name": "Setup Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -460,
+        -440
+      ],
+      "parameters": {
+        "content": "## One-time setup\nCreates the feeds, keywords and sent-items tables (skipped if they exist).",
+        "width": 1160,
+        "height": 300,
+        "color": 7
+      }
+    },
+    {
+      "id": "r1-3",
+      "name": "Load Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -460,
+        -100
+      ],
+      "parameters": {
+        "content": "## Load tables\nFinds the three tables by exact name, deletes history rows not seen for retention_days, then loads active feeds, sent history and keywords. No active feed stops the run with an error. A failed delete is retried on the next run.",
+        "width": 2180,
+        "height": 560,
+        "color": 7
+      }
+    },
+    {
+      "id": "r1-4",
+      "name": "Fetch Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1760,
+        -100
+      ],
+      "parameters": {
+        "content": "## Fetch and parse each feed\nOne feed per loop pass, with a timeout. A failed fetch or invalid XML becomes an error line, so one broken feed does not stop the others.",
+        "width": 920,
+        "height": 680,
+        "color": 7
+      }
+    },
+    {
+      "id": "r1-5",
+      "name": "Pick Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2720,
+        -100
+      ],
+      "parameters": {
+        "content": "## Pick new items\nKeyword filter, duplicate check and the HTML digest. History rows of items still in a feed are refreshed before anything can stop the run, so retention keeps them. A failed refresh does not stop the run and is retried next run.",
+        "width": 1140,
+        "height": 600,
+        "color": 7
+      }
+    },
+    {
+      "id": "r1-6",
+      "name": "Send Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        3900,
+        -100
+      ],
+      "parameters": {
+        "content": "## Send, then record\nItems are recorded only after the email was accepted. Nothing new: no email, and failed feeds stop the run with an error for the Error Workflow.",
+        "width": 960,
+        "height": 680,
+        "color": 7
+      }
+    },
+    {
+      "id": "r1-7",
+      "name": "Run Once to Create Tables",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -400,
+        -300
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "r1-8",
+      "name": "Check Feeds Every Hour",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -400,
+        40
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "r1-9",
+      "name": "RSS Digest Settings",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -180,
+        40
+      ],
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "k1",
+              "name": "recipient_email",
+              "type": "string",
+              "value": "rss-digest-reader@example.com"
+            },
+            {
+              "id": "k2",
+              "name": "from_email",
+              "type": "string",
+              "value": "RSS Digest <rss-digest@example.com>"
+            },
+            {
+              "id": "k3",
+              "name": "retention_days",
+              "type": "number",
+              "value": 30
+            },
+            {
+              "id": "k4",
+              "name": "max_items_per_digest",
+              "type": "number",
+              "value": 50
+            },
+            {
+              "id": "k5",
+              "name": "feed_timeout_seconds",
+              "type": "number",
+              "value": 20
+            },
+            {
+              "id": "k6",
+              "name": "feeds_table_name",
+              "type": "string",
+              "value": "rss_digest_feeds"
+            },
+            {
+              "id": "k7",
+              "name": "keywords_table_name",
+              "type": "string",
+              "value": "rss_digest_keywords"
+            },
+            {
+              "id": "k8",
+              "name": "history_table_name",
+              "type": "string",
+              "value": "rss_digest_sent_items"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "r1-10",
+      "name": "Setup Run?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        40,
+        40
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "r1-11",
+              "leftValue": "={{ $('Run Once to Create Tables').isExecuted }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "r1-12",
+      "name": "Create Feeds Table",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        40,
+        -300
+      ],
+      "parameters": {
+        "resource": "table",
+        "operation": "create",
+        "tableName": "={{ $('RSS Digest Settings').first().json.feeds_table_name.trim() }}",
+        "columns": {
+          "column": [
+            {
+              "name": "name",
+              "type": "string"
+            },
+            {
+              "name": "url",
+              "type": "string"
+            },
+            {
+              "name": "active",
+              "type": "boolean"
+            }
+          ]
+        },
+        "options": {
+          "createIfNotExists": true
+        }
+      }
+    },
+    {
+      "id": "r1-13",
+      "name": "Create Keywords Table",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        260,
+        -300
+      ],
+      "parameters": {
+        "resource": "table",
+        "operation": "create",
+        "tableName": "={{ $('RSS Digest Settings').first().json.keywords_table_name.trim() }}",
+        "columns": {
+          "column": [
+            {
+              "name": "keyword",
+              "type": "string"
+            },
+            {
+              "name": "exclude",
+              "type": "boolean"
+            }
+          ]
+        },
+        "options": {
+          "createIfNotExists": true
+        }
+      }
+    },
+    {
+      "id": "r1-14",
+      "name": "Create Sent Items Table",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        480,
+        -300
+      ],
+      "parameters": {
+        "resource": "table",
+        "operation": "create",
+        "tableName": "={{ $('RSS Digest Settings').first().json.history_table_name.trim() }}",
+        "columns": {
+          "column": [
+            {
+              "name": "item_key",
+              "type": "string"
+            },
+            {
+              "name": "feed_name",
+              "type": "string"
+            },
+            {
+              "name": "title",
+              "type": "string"
+            },
+            {
+              "name": "link",
+              "type": "string"
+            },
+            {
+              "name": "last_seen",
+              "type": "date"
+            }
+          ]
+        },
+        "options": {
+          "createIfNotExists": true
+        }
+      }
+    },
+    {
+      "id": "r1-15",
+      "name": "Find Data Tables",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "position": [
+        260,
+        40
+      ],
+      "parameters": {
+        "resource": "table",
+        "operation": "list",
+        "returnAll": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "r1-16",
+      "name": "Tables Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "executeOnce": true,
+      "position": [
+        480,
+        40
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "r1-17",
+              "leftValue": "={{ ['feeds_table_name', 'keywords_table_name', 'history_table_name'].every((k) => $('Find Data Tables').all().some((t) => t.json.name === $('RSS Digest Settings').first().json[k].trim())) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "r1-18",
+      "name": "Tables Missing",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        480,
+        260
+      ],
+      "parameters": {
+        "errorMessage": "={{ 'Data tables not found: ' + ['feeds_table_name', 'keywords_table_name', 'history_table_name'].map((k) => $('RSS Digest Settings').first().json[k].trim()).filter((name) => !$('Find Data Tables').all().some((t) => t.json.name === name)).join(', ') + '. Execute \"Run Once to Create Tables\" or fix the names in RSS Digest Settings.' }}"
+      }
+    },
+    {
+      "id": "r1-19",
+      "name": "Delete Expired History",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput",
+      "position": [
+        700,
+        40
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "deleteRows",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Data Tables').all().find((t) => t.json.name === $('RSS Digest Settings').first().json.history_table_name.trim()).json.id }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "last_seen",
+              "condition": "lt",
+              "keyValue": "={{ $now.minus({ days: Math.max(1, Number($('RSS Digest Settings').first().json.retention_days) || 30) }).toISO() }}"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "r1-20",
+      "name": "Load Active Feeds",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "position": [
+        920,
+        40
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Data Tables').all().find((t) => t.json.name === $('RSS Digest Settings').first().json.feeds_table_name.trim()).json.id }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "active",
+              "condition": "isTrue"
+            }
+          ]
+        },
+        "returnAll": true
+      }
+    },
+    {
+      "id": "r1-21",
+      "name": "Load Keywords",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "position": [
+        1360,
+        40
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Data Tables').all().find((t) => t.json.name === $('RSS Digest Settings').first().json.keywords_table_name.trim()).json.id }}"
+        },
+        "matchType": "anyCondition",
+        "filters": {},
+        "returnAll": true
+      }
+    },
+    {
+      "id": "r1-22",
+      "name": "Load Sent History",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "position": [
+        1140,
+        40
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Data Tables').all().find((t) => t.json.name === $('RSS Digest Settings').first().json.history_table_name.trim()).json.id }}"
+        },
+        "matchType": "anyCondition",
+        "filters": {},
+        "returnAll": true
+      }
+    },
+    {
+      "id": "r1-23",
+      "name": "Prepare Feed List",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1820,
+        40
+      ],
+      "parameters": {
+        "jsCode": "// One item per active feed row. A row without a usable URL is still passed on, so it is reported as failed.\nconst rows = $('Load Active Feeds').all().map((i) => i.json).filter((r) => r.id !== undefined);\nreturn rows.map((r) => ({ json: { feed_id: r.id, name: String(r.name ?? '').trim(), url: String(r.url ?? '').trim() } }));"
+      }
+    },
+    {
+      "id": "r1-24",
+      "name": "Any Active Feeds?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "executeOnce": true,
+      "position": [
+        1580,
+        40
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "r1-25",
+              "leftValue": "={{ $('Load Active Feeds').all().some((i) => i.json.id !== undefined) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "r1-26",
+      "name": "No Active Feeds",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        1580,
+        260
+      ],
+      "parameters": {
+        "errorMessage": "={{ 'No active feeds in the data table \"' + $('RSS Digest Settings').first().json.feeds_table_name.trim() + '\". Add a row with name and url and tick active.' }}"
+      }
+    },
+    {
+      "id": "r1-27",
+      "name": "Fetch Feed XML",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "onError": "continueRegularOutput",
+      "position": [
+        1820,
+        300
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/rss+xml, application/atom+xml;q=0.9, application/xml;q=0.8, text/xml;q=0.8, */*;q=0.5"
+            }
+          ]
+        },
+        "options": {
+          "timeout": "={{ Math.max(1, Number($('RSS Digest Settings').first().json.feed_timeout_seconds) || 20) * 1000 }}",
+          "response": {
+            "response": {
+              "responseFormat": "text",
+              "outputPropertyName": "data"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "r1-28",
+      "name": "Loop Over Feeds",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        2040,
+        40
+      ],
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      }
+    },
+    {
+      "id": "r1-29",
+      "name": "Parse Feed XML",
+      "type": "n8n-nodes-base.xml",
+      "typeVersion": 1,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput",
+      "position": [
+        2040,
+        300
+      ],
+      "parameters": {
+        "mode": "xmlToJson",
+        "dataPropertyName": "data",
+        "options": {}
+      }
+    },
+    {
+      "id": "r1-30",
+      "name": "Tag Feed Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2260,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// Result of one feed: an error text, or the parsed XML. Runs once per feed inside the loop.\nconst feed = $('Loop Over Feeds').first().json;\nconst fetched = $('Fetch Feed XML').first().json;\nconst parsed = $input.first().json;\nconst squash = (v) => String(v ?? '').replace(/\\s+/g, ' ').trim();\nlet error = '';\nif (fetched.error) {\n  const e = fetched.error;\n  error = squash(typeof e === 'string' ? e : e.message || e.description || JSON.stringify(e)).slice(0, 200) || 'The request failed.';\n} else if (!parsed || !Object.keys(parsed).length) error = 'The response is not valid XML.';\nreturn [{ json: { feed_id: feed.feed_id, name: feed.name, url: feed.url, error, xml: error ? null : parsed } }];"
+      }
+    },
+    {
+      "id": "r1-31",
+      "name": "Pick New Items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2780,
+        40
+      ],
+      "parameters": {
+        "jsCode": "// Turns the fetched feeds into one digest. Nothing is written here.\nconst s = $('RSS Digest Settings').first().json;\nconst retentionDays = Math.max(1, Number(s.retention_days) || 30);\nconst maxItems = Math.max(1, Math.floor(Number(s.max_items_per_digest) || 50));\nconst now = DateTime.now().setZone($now.zoneName);\nconst cutoff = now.minus({ days: retentionDays }).toMillis();\n\n// Same link = same key: no scheme, lowercase host without www., no #fragment, no trailing slash,\n// no utm_* or click-id parameters, remaining parameters sorted.\nconst TRACKING = /^(utm_.*|fbclid|gclid|gclsrc|dclid|gbraid|wbraid|msclkid|yclid|twclid|igshid|mc_cid|mc_eid|_hsenc|_hsmi|mkt_tok)$/i;\nfunction linkKey(raw) {\n  const m = String(raw ?? '').trim().match(/^https?:\\/\\/([^\\/?#\\s]+)([^?#\\s]*)(\\?[^#\\s]*)?(#\\S*)?$/i);\n  if (!m) return '';\n  const host = m[1].toLowerCase().replace(/^[^@]*@/, '').replace(/^www\\./, '').replace(/:(80|443)$/, '');\n  const name = (p) => { try { return decodeURIComponent(p.split('=')[0]); } catch (e) { return p.split('=')[0]; } };\n  const params = (m[3] || '').slice(1).split('&').filter((p) => p && !TRACKING.test(name(p))).sort();\n  return 'url:' + host + m[2].replace(/\\/+$/, '') + (params.length ? '?' + params.join('&') : '');\n}\nconst squash = (v) => String(v ?? '').replace(/\\s+/g, ' ').trim();\nconst titleKey = (t) => 'title:' + squash(t).toLowerCase();\n\n// XML values arrive as strings, objects with \"_\" text and attributes, or arrays.\nconst text = (v) => (v == null ? '' : Array.isArray(v) ? text(v[0]) : typeof v === 'object' ? text(v._ ?? '') : String(v));\nconst decode = (t) => t.replace(/&nbsp;/g, ' ').replace(/&#(\\d+);/g, (m, d) => String.fromCodePoint(Number(d))).replace(/&#x([0-9a-f]+);/gi, (m, h) => String.fromCodePoint(parseInt(h, 16)))\n  .replace(/&quot;/g, '\"').replace(/&#39;|&apos;/g, \"'\").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');\nconst plain = (v) => squash(decode(text(v).replace(/<[^>]*>/g, ' ')));\nconst list = (v) => (v == null ? [] : Array.isArray(v) ? v : [v]);\nfunction atomLink(v) {\n  const links = list(v).map((l) => (typeof l === 'string' ? { href: l } : l || {}));\n  const best = links.find((l) => !l.rel || l.rel === 'alternate') || links[0];\n  return best ? String(best.href ?? text(best)) : '';\n}\nfunction toMillis(v) {\n  const t = text(v).trim();\n  if (!t) return null;\n  const ms = Date.parse(t);\n  return Number.isFinite(ms) ? ms : null;\n}\n\n// Keywords: case-insensitive, whole word or phrase (letters and digits around it do not count as a match).\nconst escRe = (t) => t.replace(/[.*+?^$\\{\\}()|[\\]\\\\]/g, '\\\\$&');\nconst keywordRows = $('Load Keywords').all().map((i) => i.json).filter((r) => r.id !== undefined && squash(r.keyword));\nconst toRule = (r) => ({ word: squash(r.keyword), re: new RegExp('(?<![\\\\p{L}\\\\p{N}_])' + squash(r.keyword).split(' ').map(escRe).join('\\\\s+') + '(?![\\\\p{L}\\\\p{N}_])', 'iu') });\nconst includes = keywordRows.filter((r) => r.exclude !== true).map(toRule);\nconst excludes = keywordRows.filter((r) => r.exclude === true).map(toRule);\n\nconst history = new Map();\nfor (const r of $('Load Sent History').all().map((i) => i.json)) if (r.id !== undefined && r.item_key) history.set(r.item_key, r);\n\n// One result per feed from Tag Feed Result: the feed row, an error text or the parsed XML.\nconst feeds = $input.all().map((i) => i.json).filter((f) => f.feed_id !== undefined);\n\nconst failed = [], candidates = [], touch = [], seenThisRun = new Set();\nconst stats = { feeds: feeds.length, items: 0, already_sent: 0, too_old: 0, keyword_skipped: 0, repeated: 0, no_link_or_title: 0 };\nfeeds.forEach((feed, i) => {\n  const name = squash(feed.name) || feed.url;\n  if (feed.error) return failed.push({ name, url: feed.url, error: feed.error });\n  const x = feed.xml || {};\n  let entries;\n  if (x.rss) entries = list(x.rss.channel?.item);\n  else if (x.feed) entries = list(x.feed.entry);\n  else if (x['rdf:RDF']) entries = list(x['rdf:RDF'].item);\n  else return failed.push({ name, url: feed.url, error: 'The response is not an RSS or Atom feed.' });\n  for (const e of entries) {\n    stats.items++;\n    const title = plain(e.title);\n    const isAtom = Boolean(x.feed);\n    let link = isAtom ? atomLink(e.link) : squash(text(e.link));\n    if (!link && !isAtom && e.guid && (typeof e.guid !== 'object' || e.guid.isPermaLink !== 'false')) link = squash(text(e.guid));\n    const key = linkKey(link) || (title ? titleKey(title) : '');\n    if (!key) { stats.no_link_or_title++; continue; }\n    const dateMs = toMillis(e.pubDate ?? e['dc:date'] ?? e.published ?? e.updated);\n    if (dateMs !== null && dateMs < cutoff) { stats.too_old++; continue; }\n    const sent = history.get(key);\n    if (sent) {\n      stats.already_sent++;\n      // Keeps the history row at least as new as the item, so retention never removes the row of an item\n      // that is still in a feed and still inside the window. Undated items count as seen now.\n      const effective = dateMs ?? now.toMillis();\n      const last = Date.parse(sent.last_seen);\n      if (!Number.isFinite(last) || effective > last) touch.push({ id: sent.id, last_seen: new Date(effective).toISOString() });\n      continue;\n    }\n    if (seenThisRun.has(key)) { stats.repeated++; continue; }\n    const summary = plain(e.description ?? e.summary ?? e['content:encoded'] ?? e.content);\n    const haystack = title + ' ' + summary;\n    const matched = includes.filter((k) => k.re.test(haystack)).map((k) => k.word);\n    if ((includes.length && !matched.length) || excludes.some((k) => k.re.test(haystack))) { stats.keyword_skipped++; continue; }\n    seenThisRun.add(key);\n    candidates.push({ key, feed_name: name, feed_index: i, title: title || link, link, date_ms: dateMs, matched, summary: summary.length > 280 ? summary.slice(0, 277) + '...' : summary });\n  }\n});\n\n// Newest first; undated items count as published now. Items over the limit wait for the next run.\ncandidates.sort((a, b) => (b.date_ms ?? now.toMillis()) - (a.date_ms ?? now.toMillis()));\nconst picked = candidates.slice(0, maxItems);\nconst overflow = candidates.length - picked.length;\n\nconst esc = (v) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;').replace(/'/g, '&#39;');\nconst fmt = (ms) => (ms === null ? '' : DateTime.fromMillis(ms).setZone($now.zoneName).toFormat('d LLL yyyy, HH:mm'));\nlet html = '<h2 style=\"font-family:sans-serif\">' + picked.length + ' new item' + (picked.length === 1 ? '' : 's') + '</h2>';\nif (failed.length) html += '<p style=\"font-family:sans-serif;color:#b00020\"><b>Could not read ' + failed.length + ' feed' + (failed.length === 1 ? '' : 's') + ':</b></p><ul style=\"font-family:sans-serif\">' + failed.map((f) => '<li>' + esc(f.name) + ' (' + esc(f.url) + '): ' + esc(f.error) + '</li>').join('') + '</ul>';\nconst groups = [...new Set(picked.map((p) => p.feed_index))].sort((a, b) => a - b);\nfor (const g of groups) {\n  const items = picked.filter((p) => p.feed_index === g);\n  html += '<h3 style=\"font-family:sans-serif\">' + esc(items[0].feed_name) + '</h3><ul style=\"font-family:sans-serif\">';\n  for (const p of items) {\n    const head = /^https?:\\/\\//i.test(p.link) ? '<a href=\"' + esc(p.link) + '\">' + esc(p.title) + '</a>' : esc(p.title);\n    const meta = [fmt(p.date_ms), p.matched.length ? 'matched: ' + p.matched.map(esc).join(', ') : ''].filter(Boolean).join(' &middot; ');\n    html += '<li style=\"margin-bottom:10px\">' + head + (meta ? '<br><small>' + meta + '</small>' : '') + (p.summary ? '<br>' + esc(p.summary) : '') + '</li>';\n  }\n  html += '</ul>';\n}\nif (overflow > 0) html += '<p style=\"font-family:sans-serif\">' + overflow + ' more new item' + (overflow === 1 ? '' : 's') + ' will come in the next digest.</p>';\n\nconst sentAt = now.toMillis();\nreturn [{ json: {\n  new_count: picked.length,\n  overflow,\n  failed,\n  stats,\n  touch,\n  subject: 'RSS digest: ' + picked.length + ' new item' + (picked.length === 1 ? '' : 's') + (failed.length ? ', ' + failed.length + ' feed' + (failed.length === 1 ? '' : 's') + ' failed' : ''),\n  html,\n  sent: picked.map((p) => ({ item_key: p.key, feed_name: p.feed_name, title: p.title.slice(0, 500), link: p.link.slice(0, 2000), last_seen: new Date(Math.max(sentAt, p.date_ms ?? 0)).toISOString() })),\n} }];"
+      }
+    },
+    {
+      "id": "r1-32",
+      "name": "Any Seen Again?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3000,
+        40
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "r1-33",
+              "leftValue": "={{ $json.touch.length > 0 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "r1-34",
+      "name": "List Items Seen Again",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3220,
+        20
+      ],
+      "parameters": {
+        "jsCode": "// History rows to refresh (see Pick New Items).\nreturn $('Pick New Items').first().json.touch.map((t) => ({ json: t }));"
+      }
+    },
+    {
+      "id": "r1-35",
+      "name": "Refresh Last Seen",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput",
+      "position": [
+        3440,
+        20
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Data Tables').all().find((t) => t.json.name === $('RSS Digest Settings').first().json.history_table_name.trim()).json.id }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "condition": "eq",
+              "keyValue": "={{ $json.id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "last_seen": "={{ $json.last_seen }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "last_seen",
+              "displayName": "last_seen",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "r1-36",
+      "name": "Back to Digest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3660,
+        20
+      ],
+      "parameters": {
+        "jsCode": "// Refresh done (or failed): continue with the one digest item from Pick New Items.\nreturn [$('Pick New Items').first()];"
+      }
+    },
+    {
+      "id": "r1-37",
+      "name": "Anything New?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3960,
+        40
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "r1-38",
+              "leftValue": "={{ $json.new_count > 0 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "r1-39",
+      "name": "Send Digest Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        4180,
+        20
+      ],
+      "parameters": {
+        "fromEmail": "={{ $('RSS Digest Settings').first().json.from_email }}",
+        "toEmail": "={{ $('RSS Digest Settings').first().json.recipient_email }}",
+        "subject": "={{ $json.subject }}",
+        "emailFormat": "html",
+        "html": "={{ $json.html }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "smtp": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "r1-40",
+      "name": "One Row per Sent Item",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4400,
+        20
+      ],
+      "parameters": {
+        "jsCode": "// The email was accepted, so each item in it is recorded now.\nreturn $('Pick New Items').first().json.sent.map((row) => ({ json: row }));"
+      }
+    },
+    {
+      "id": "r1-41",
+      "name": "Record Sent Items",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        4620,
+        20
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "insert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Data Tables').all().find((t) => t.json.name === $('RSS Digest Settings').first().json.history_table_name.trim()).json.id }}"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "item_key": "={{ $json.item_key }}",
+            "feed_name": "={{ $json.feed_name }}",
+            "title": "={{ $json.title }}",
+            "link": "={{ $json.link }}",
+            "last_seen": "={{ $json.last_seen }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "item_key",
+              "displayName": "item_key",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "feed_name",
+              "displayName": "feed_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "title",
+              "displayName": "title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "link",
+              "displayName": "link",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "last_seen",
+              "displayName": "last_seen",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "r1-42",
+      "name": "Any Feed Failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        4180,
+        260
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "r1-43",
+              "leftValue": "={{ $json.failed.length > 0 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "r1-44",
+      "name": "Report Failed Feeds",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        4400,
+        240
+      ],
+      "parameters": {
+        "errorMessage": "={{ 'Nothing new, and these feeds could not be read: ' + $json.failed.map((f) => f.name + ' (' + f.url + '): ' + f.error).join(' | ') }}"
+      }
+    },
+    {
+      "id": "r1-45",
+      "name": "Nothing New",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        4400,
+        420
+      ],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "Run Once to Create Tables": {
+      "main": [
+        [
+          {
+            "node": "RSS Digest Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Feeds Every Hour": {
+      "main": [
+        [
+          {
+            "node": "RSS Digest Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RSS Digest Settings": {
+      "main": [
+        [
+          {
+            "node": "Setup Run?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Setup Run?": {
+      "main": [
+        [
+          {
+            "node": "Create Feeds Table",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Find Data Tables",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Feeds Table": {
+      "main": [
+        [
+          {
+            "node": "Create Keywords Table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Keywords Table": {
+      "main": [
+        [
+          {
+            "node": "Create Sent Items Table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Data Tables": {
+      "main": [
+        [
+          {
+            "node": "Tables Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tables Found?": {
+      "main": [
+        [
+          {
+            "node": "Delete Expired History",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Tables Missing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete Expired History": {
+      "main": [
+        [
+          {
+            "node": "Load Active Feeds",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Active Feeds": {
+      "main": [
+        [
+          {
+            "node": "Load Sent History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Sent History": {
+      "main": [
+        [
+          {
+            "node": "Load Keywords",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Keywords": {
+      "main": [
+        [
+          {
+            "node": "Any Active Feeds?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Active Feeds?": {
+      "main": [
+        [
+          {
+            "node": "Prepare Feed List",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Active Feeds",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Feed List": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Feeds",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Feeds": {
+      "main": [
+        [
+          {
+            "node": "Pick New Items",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fetch Feed XML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Feed XML": {
+      "main": [
+        [
+          {
+            "node": "Parse Feed XML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Feed XML": {
+      "main": [
+        [
+          {
+            "node": "Tag Feed Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tag Feed Result": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Feeds",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick New Items": {
+      "main": [
+        [
+          {
+            "node": "Any Seen Again?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Seen Again?": {
+      "main": [
+        [
+          {
+            "node": "List Items Seen Again",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Anything New?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List Items Seen Again": {
+      "main": [
+        [
+          {
+            "node": "Refresh Last Seen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Refresh Last Seen": {
+      "main": [
+        [
+          {
+            "node": "Back to Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Back to Digest": {
+      "main": [
+        [
+          {
+            "node": "Anything New?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anything New?": {
+      "main": [
+        [
+          {
+            "node": "Send Digest Email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Any Feed Failed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Digest Email": {
+      "main": [
+        [
+          {
+            "node": "One Row per Sent Item",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "One Row per Sent Item": {
+      "main": [
+        [
+          {
+            "node": "Record Sent Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Feed Failed?": {
+      "main": [
+        [
+          {
+            "node": "Report Failed Feeds",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Nothing New",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {}
+}

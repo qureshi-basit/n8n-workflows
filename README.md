@@ -15,6 +15,9 @@ Workflows published on [basitq.cloud/workflows](https://basitq.cloud/workflows).
 | [Postgres SMTP Approval Requests with Approve Reject Email Links](workflows/postgres-smtp-approval-requests-with-approve-reject-email-links.json) | [basitq.cloud](https://basitq.cloud/workflows/postgres-smtp-approval-requests-with-approve-reject-email-links) |
 | [n8n Form Dynamic Dropdown from Data Table for Stock Requests](workflows/n8n-form-dynamic-dropdown-from-data-table-for-stock-requests.json) | [basitq.cloud](https://basitq.cloud/workflows/n8n-form-dynamic-dropdown-from-data-table-for-stock-requests) |
 | [Webhook Data Tables Combine Multiple Chat Messages into One](workflows/webhook-data-tables-combine-multiple-chat-messages-into-one.json) | [basitq.cloud](https://basitq.cloud/workflows/webhook-data-tables-combine-multiple-chat-messages-into-one) |
+| [n8n Data Table JSON API for Website with Pagination](workflows/n8n-data-table-json-api-for-website-with-pagination.json) | [basitq.cloud](https://basitq.cloud/workflows/n8n-data-table-json-api-for-website-with-pagination) |
+| [n8n Form Conditional Questions Based on Previous Answers](workflows/n8n-form-conditional-questions-based-on-previous-answers.json) | [basitq.cloud](https://basitq.cloud/workflows/n8n-form-conditional-questions-based-on-previous-answers) |
+| [RSS Feed Keyword Alerts Email Digest Without Duplicates](workflows/rss-feed-keyword-alerts-email-digest-without-duplicates.json) | [basitq.cloud](https://basitq.cloud/workflows/rss-feed-keyword-alerts-email-digest-without-duplicates) |
 
 ## Use one
 

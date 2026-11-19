@@ -1,0 +1,546 @@
+{
+  "name": "n8n Data Table JSON API for Website with Pagination",
+  "nodes": [
+    {
+      "id": "t2-2",
+      "name": "Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -760,
+        -240
+      ],
+      "parameters": {
+        "content": "### How it works\nYour website calls one read-only URL, e.g. `<Production URL>?table=articles&limit=10&offset=0&sort=-published_at&category=news`, and gets JSON with `items`, `total`, `limit`, `offset`, `hasMore` and a `next` link. No n8n API key is exposed.\n\n1. **Check Request** checks the query against the allow-list in **API Settings**: only listed tables are public, only their `columns` are returned, filtered or sorted, and rows must match the fixed `where`.\n2. The Data Table is matched by exact name; similar names are never read.\n3. **Build Page** filters, sorts and slices the rows.\n\nErrors are JSON: 400 bad parameter, 404 unknown public name, 500 failed read or broken settings, e.g. a missing `data_table`. Tested on n8n 2.48.5.\n\n### Setup\n1. In **API Settings** edit `public_tables` (public name -> `data_table`, `columns`, `where`, `default_sort`), `default_limit`, `max_limit` (larger limits are cut to it) and `cache_seconds`.\n2. Set **Allowed Origins (CORS)** on **Data Table API Request** to your site, e.g. `https://example.com`.\n3. Activate the workflow and copy the Production URL from **Data Table API Request**. `next` links use the instance's webhook URL.\n\n### Customization\nFilters are exact, case-sensitive matches on text, number and boolean columns (`?topic=billing`), combined with AND. `sort=col` or `sort=-col`; empty cells sort last.\n\nTo restrict access, set **Authentication** on **Data Table API Request** to Header Auth (e.g. header `X-API-Key`) and `cache_seconds` to 0. n8n then rejects a missing or wrong header itself, not as JSON. A key in website code is visible to anyone.\n\nEach request reads the whole table (fine for a few thousand rows) and has no rate limit. `cache_seconds` lets browsers and CDNs reuse answers (sent with `Vary: Origin`). If a response node itself fails, n8n sends its own error.",
+        "width": 620,
+        "height": 1060
+      }
+    },
+    {
+      "id": "t2-3",
+      "name": "Request Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -100,
+        -240
+      ],
+      "parameters": {
+        "content": "## Read and check the request\nThe query string is checked against the allow-list in API Settings before any table is read.",
+        "width": 900,
+        "height": 520,
+        "color": 7
+      }
+    },
+    {
+      "id": "t2-4",
+      "name": "Table Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        840,
+        -240
+      ],
+      "parameters": {
+        "content": "## Find the table\nOnly a Data Table whose name matches exactly is used. Filter values must fit the column type.",
+        "width": 680,
+        "height": 520,
+        "color": 7
+      }
+    },
+    {
+      "id": "t2-5",
+      "name": "Rows Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1560,
+        -240
+      ],
+      "parameters": {
+        "content": "## Read rows and build the page\nRows are filtered, sorted and sliced. Only allowed columns are returned.",
+        "width": 680,
+        "height": 520,
+        "color": 7
+      }
+    },
+    {
+      "id": "t2-6",
+      "name": "Response Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -100,
+        320
+      ],
+      "parameters": {
+        "content": "## Responses\nEvery answer is JSON. Errors are never cached.",
+        "width": 2340,
+        "height": 380,
+        "color": 7
+      }
+    },
+    {
+      "id": "t2-1",
+      "name": "Data Table API Request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -40,
+        60
+      ],
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "data-table-api",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      }
+    },
+    {
+      "id": "t2-7",
+      "name": "API Settings",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "onError": "continueErrorOutput",
+      "position": [
+        180,
+        60
+      ],
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "k1",
+              "name": "public_tables",
+              "type": "object",
+              "value": "{\n  \"articles\": {\n    \"data_table\": \"website_articles\",\n    \"columns\": [\n      \"id\",\n      \"title\",\n      \"slug\",\n      \"summary\",\n      \"category\",\n      \"published_at\"\n    ],\n    \"where\": {\n      \"status\": \"published\"\n    },\n    \"default_sort\": \"-published_at\"\n  },\n  \"faqs\": {\n    \"data_table\": \"website_faqs\",\n    \"columns\": [\n      \"question\",\n      \"answer\",\n      \"topic\",\n      \"position\"\n    ],\n    \"where\": {},\n    \"default_sort\": \"position\"\n  }\n}"
+            },
+            {
+              "id": "k2",
+              "name": "default_limit",
+              "type": "number",
+              "value": 20
+            },
+            {
+              "id": "k3",
+              "name": "max_limit",
+              "type": "number",
+              "value": 100
+            },
+            {
+              "id": "k4",
+              "name": "cache_seconds",
+              "type": "number",
+              "value": 60
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "t2-8",
+      "name": "Check Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "onError": "continueErrorOutput",
+      "position": [
+        400,
+        60
+      ],
+      "parameters": {
+        "jsCode": "// Check the query string against the allow-list before any table is read.\nconst req = $('Data Table API Request').first().json;\nconst s = $('API Settings').first().json;\nconst q = req.query || {};\nconst fail = (status, code, message) => [{ json: { ok: false, status, code, message } }];\nconst own = (o, k) => o !== null && typeof o === 'object' && Object.prototype.hasOwnProperty.call(o, k);\nconst short = (v) => String(v).slice(0, 60);\n\nfor (const [k, v] of Object.entries(q)) {\n  if (typeof v !== 'string') return fail(400, 'invalid_parameter', 'Give \"' + short(k) + '\" once, as plain text.');\n}\nconst name = String(q.table ?? '').trim();\nif (!name) return fail(400, 'missing_table', 'Add ?table=<name> to the URL.');\nconst tables = s.public_tables;\nif (!own(tables, name)) return fail(404, 'table_not_found', 'No public table named \"' + short(name) + '\".');\nconst cfg = tables[name] || {};\nconst columns = Array.isArray(cfg.columns) ? cfg.columns.map(String) : [];\nconst where = own(cfg, 'where') && cfg.where && typeof cfg.where === 'object' && !Array.isArray(cfg.where) ? cfg.where : {};\nif (typeof cfg.data_table !== 'string' || !cfg.data_table.trim() || !columns.length) {\n  return fail(500, 'config_error', 'The API settings for \"' + short(name) + '\" need data_table and columns.');\n}\n\nconst whole = (raw) => (/^\\d{1,9}$/.test(raw) ? Number(raw) : NaN);\nconst maxLimit = Math.max(1, Math.floor(Number(s.max_limit)) || 100);\nlet limit = Math.min(Math.max(1, Math.floor(Number(s.default_limit)) || 20), maxLimit);\nif (q.limit !== undefined) {\n  limit = whole(q.limit);\n  if (!Number.isFinite(limit) || limit < 1) return fail(400, 'invalid_limit', 'limit must be a whole number from 1 to ' + maxLimit + '.');\n  limit = Math.min(limit, maxLimit);\n}\nlet offset = 0;\nif (q.offset !== undefined) {\n  offset = whole(q.offset);\n  if (!Number.isFinite(offset)) return fail(400, 'invalid_offset', 'offset must be a whole number of 0 or more.');\n}\nconst sortRaw = q.sort !== undefined ? q.sort.trim() : String(cfg.default_sort ?? '').trim();\nlet sort = null;\nif (sortRaw) {\n  const column = sortRaw.replace(/^-/, '');\n  if (!columns.includes(column)) return fail(400, 'invalid_sort', 'sort must be one of: ' + columns.join(', ') + ' (add - for descending).');\n  sort = { column, desc: sortRaw.startsWith('-') };\n}\nconst RESERVED = ['table', 'limit', 'offset', 'sort'];\nconst filters = {};\nfor (const [k, v] of Object.entries(q)) {\n  if (RESERVED.includes(k)) continue;\n  if (!columns.includes(k)) return fail(400, 'unknown_parameter', 'Unknown parameter \"' + short(k) + '\". Filter on: ' + columns.join(', ') + '.');\n  if (v.trim() === '') return fail(400, 'invalid_filter', 'Filter \"' + short(k) + '\" needs a value.');\n  filters[k] = v;\n}\nreturn [{ json: {\n  ok: true, public_name: name, data_table: cfg.data_table.trim(), columns, where, limit, offset, sort,\n  sort_param: q.sort !== undefined ? q.sort.trim() : '', filters,\n} }];"
+      }
+    },
+    {
+      "id": "t2-9",
+      "name": "Request OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        620,
+        60
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "t2-10",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "t2-11",
+      "name": "Find Data Tables",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "onError": "continueErrorOutput",
+      "position": [
+        900,
+        40
+      ],
+      "parameters": {
+        "resource": "table",
+        "operation": "list",
+        "returnAll": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "t2-12",
+      "name": "Match Table Exactly",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "onError": "continueErrorOutput",
+      "position": [
+        1120,
+        60
+      ],
+      "parameters": {
+        "jsCode": "// Use the table whose name matches exactly (the list can contain similar names),\n// check that the configured columns exist and that each filter value fits its column type.\n// A failed list also sends an empty item here (Always Output Data): stop, the error branch answers.\nif ($('Find Data Tables').all(1).length) return [];\nconst r = $('Check Request').first().json;\nconst fail = (status, code, message) => [{ json: { ok: false, status, code, message } }];\nconst own = (o, k) => Object.prototype.hasOwnProperty.call(o, k);\nconst table = $input.all().map((i) => i.json).find((t) => t && t.id !== undefined && t.name === r.data_table);\nif (!table) return fail(500, 'config_error', 'The API settings for \"' + r.public_name + '\" point to a Data Table that does not exist: ' + r.data_table + '.');\nconst types = { id: 'number', createdAt: 'date', updatedAt: 'date' };\nfor (const c of table.columns || []) types[c.name] = c.type;\nconst needed = [...r.columns, ...Object.keys(r.where)];\nconst missing = needed.filter((c) => !own(types, c));\nif (missing.length) return fail(500, 'config_error', 'The API settings for \"' + r.public_name + '\" name columns the table does not have: ' + missing.join(', ') + '.');\nconst filters = {};\nfor (const [col, raw] of Object.entries(r.filters)) {\n  const type = types[col];\n  if (type === 'number') {\n    if (!/^-?\\d+(\\.\\d+)?$/.test(raw.trim())) return fail(400, 'invalid_filter', 'Filter \"' + col + '\" must be a number.');\n    filters[col] = Number(raw);\n  } else if (type === 'boolean') {\n    if (raw !== 'true' && raw !== 'false') return fail(400, 'invalid_filter', 'Filter \"' + col + '\" must be true or false.');\n    filters[col] = raw === 'true';\n  } else if (type === 'string') {\n    filters[col] = raw;\n  } else {\n    return fail(400, 'invalid_filter', 'Filtering on \"' + col + '\" (' + type + ') is not supported. Sort on it instead.');\n  }\n}\nreturn [{ json: { ok: true, table_id: table.id, types, filters } }];"
+      }
+    },
+    {
+      "id": "t2-13",
+      "name": "Table OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1340,
+        60
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "t2-14",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "t2-15",
+      "name": "Load Rows",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "onError": "continueErrorOutput",
+      "position": [
+        1620,
+        40
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Match Table Exactly').first().json.table_id }}"
+        },
+        "matchType": "allConditions",
+        "filters": {},
+        "returnAll": true
+      }
+    },
+    {
+      "id": "t2-16",
+      "name": "Build Page",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "onError": "continueErrorOutput",
+      "position": [
+        1840,
+        60
+      ],
+      "parameters": {
+        "jsCode": "// Keep rows that match the fixed where and the query filters, sort them, cut out one page\n// and return only the allowed columns.\n// A failed read also sends an empty item here (Always Output Data): stop, the error branch answers.\nif ($('Load Rows').all(1).length) return [];\nconst r = $('Check Request').first().json;\nconst m = $('Match Table Exactly').first().json;\nconst s = $('API Settings').first().json;\nconst types = m.types;\nconst rows = $input.all().map((i) => i.json).filter((x) => x && x.id !== undefined);\nconst isEmpty = (v) => v === null || v === undefined || v === '';\nconst time = (v) => new Date(v).getTime();\nconst asBool = (v) => v === true || v === 1 || v === 'true' || v === '1';\nconst same = (cell, want, type) => {\n  if (isEmpty(cell)) return isEmpty(want);\n  if (type === 'number') return Number(cell) === Number(want);\n  if (type === 'boolean') return asBool(cell) === asBool(want);\n  if (type === 'date') return time(cell) === time(want);\n  return String(cell) === String(want);\n};\nconst conditions = [...Object.entries(r.where), ...Object.entries(m.filters)];\nconst matched = rows.filter((row) => conditions.every(([col, want]) => same(row[col], want, types[col])));\nconst compare = (a, b, type) => {\n  if (type === 'number') return Number(a) - Number(b);\n  if (type === 'date') return time(a) - time(b);\n  if (type === 'boolean') return Number(asBool(a)) - Number(asBool(b));\n  return String(a).localeCompare(String(b), 'en');\n};\nmatched.sort((a, b) => {\n  if (r.sort) {\n    const col = r.sort.column; const ea = isEmpty(a[col]); const eb = isEmpty(b[col]);\n    if (ea !== eb) return ea ? 1 : -1;\n    if (!ea) { const d = compare(a[col], b[col], types[col]); if (d) return r.sort.desc ? -d : d; }\n  }\n  return a.id - b.id;\n});\nconst pick = (row) => Object.fromEntries(r.columns.map((c) => {\n  const v = row[c];\n  return [c, v instanceof Date ? v.toISOString() : (v === undefined ? null : v)];\n}));\nconst total = matched.length;\nconst items = matched.slice(r.offset, r.offset + r.limit).map(pick);\nconst hasMore = r.offset + items.length < total;\nlet next = null;\nif (hasMore) {\n  const p = { table: r.public_name, limit: r.limit, offset: r.offset + r.limit };\n  if (r.sort_param) p.sort = r.sort_param;\n  Object.assign(p, r.filters);\n  const query = Object.entries(p).map(([k, v]) => encodeURIComponent(k) + '=' + encodeURIComponent(String(v))).join('&');\n  next = String($('Data Table API Request').first().json.webhookUrl).split('?')[0] + '?' + query;\n}\nconst seconds = Math.max(0, Math.floor(Number(s.cache_seconds)) || 0);\nconst cache = seconds ? 'public, max-age=' + seconds : 'no-store';\nreturn [{ json: { cache_control: cache, body: { table: r.public_name, total, limit: r.limit, offset: r.offset, count: items.length, hasMore, next, items } } }];"
+      }
+    },
+    {
+      "id": "t2-17",
+      "name": "Respond with Rows",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        2060,
+        460
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.body }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Cache-Control",
+                "value": "={{ $json.cache_control }}"
+              },
+              {
+                "name": "Vary",
+                "value": "Origin"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "t2-18",
+      "name": "Respond with Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1340,
+        460
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { error: { status: $json.status, code: $json.code, message: $json.message } } }}",
+        "options": {
+          "responseCode": "={{ $json.status }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Cache-Control",
+                "value": "no-store"
+              },
+              {
+                "name": "Vary",
+                "value": "Origin"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "t2-19",
+      "name": "Respond with Server Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1840,
+        460
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { error: { status: 500, code: \"internal_error\", message: \"The data could not be read. Please try again later.\" } } }}",
+        "options": {
+          "responseCode": 500,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Cache-Control",
+                "value": "no-store"
+              },
+              {
+                "name": "Vary",
+                "value": "Origin"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Data Table API Request": {
+      "main": [
+        [
+          {
+            "node": "API Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "API Settings": {
+      "main": [
+        [
+          {
+            "node": "Check Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond with Server Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Request": {
+      "main": [
+        [
+          {
+            "node": "Request OK?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond with Server Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Request OK?": {
+      "main": [
+        [
+          {
+            "node": "Find Data Tables",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond with Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Data Tables": {
+      "main": [
+        [
+          {
+            "node": "Match Table Exactly",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond with Server Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Match Table Exactly": {
+      "main": [
+        [
+          {
+            "node": "Table OK?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond with Server Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Table OK?": {
+      "main": [
+        [
+          {
+            "node": "Load Rows",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond with Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Rows": {
+      "main": [
+        [
+          {
+            "node": "Build Page",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond with Server Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Page": {
+      "main": [
+        [
+          {
+            "node": "Respond with Rows",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond with Server Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {}
+}

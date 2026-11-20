@@ -1,0 +1,1461 @@
+{
+  "name": "Schedule Trigger First or Last Working Day of Month",
+  "nodes": [
+    {
+      "id": "m1-1",
+      "name": "Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1160,
+        -520
+      ],
+      "parameters": {
+        "content": "For ops and finance teams whose jobs follow business-calendar dates.\n\n### How it works\n1. Every hour (minute 5) each enabled rule is checked: `working_day_of_month` (`n` 1 = first, -1 = last, up to 23), `working_day_of_quarter` (up to 66), `weekday_of_month` (`n` 1-5 or -1, plus `weekday`) or `every_working_day`.\n2. Working days are `working_days` minus the holidays table. A month or quarter with fewer than `n` working days has no run. A `weekday_of_month` date that is not a working day follows `shift`: `skip`, `next` or `previous`; no 5th weekday, no run.\n3. On the due date, from `run_hour`, the rule's `webhook_url` gets a POST. After a 2xx it is not called again that period; a non-2xx or timeout is retried hourly that day, up to `max_attempts`.\n4. An email lists every job called, skipped or invalid, with its status.\n\n### Setup\n1. In **Schedule Settings** set the three table names, `working_days`, `max_attempts`, `job_timeout_seconds`, `email_to`, `email_from` (a sender your SMTP server accepts); keep `test_date` empty.\n2. Attach SMTP to **Send Summary Email**. On **Call Job Webhook** attach the Header Auth credential your job webhooks check, or set Authentication to None.\n3. Execute **Run Once to Create Tables** (needs data table create permission).\n4. Add holidays (`holiday_date` YYYY-MM-DD), edit rules, set `enabled`. `webhook_url` is the production URL of the job workflow's Webhook node (POST).\n5. Set the timezone in Workflow Settings, then activate.\n\n### Customization\n`test_date` (YYYY-MM-DD or YYYY-MM-DDTHH:mm) checks that date instead; jobs get `\"test\": true` and are logged separately.\n\nLimits: no catch-up if n8n is off all day. Two executions at the same moment could both call a job.",
+        "width": 660,
+        "height": 1320
+      }
+    },
+    {
+      "id": "m1-2",
+      "name": "Setup Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -460,
+        -520
+      ],
+      "parameters": {
+        "content": "## One-time setup\nCreates the rules, holidays and run log tables (skipped if they exist) and adds five disabled example rules to an empty rules table.",
+        "width": 1800,
+        "height": 300,
+        "color": 7
+      }
+    },
+    {
+      "id": "m1-3",
+      "name": "Load Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -460,
+        -180
+      ],
+      "parameters": {
+        "content": "## Load the tables\nFinds the three tables by exact name. If one is missing, an alert email is sent and the run fails.",
+        "width": 1740,
+        "height": 640,
+        "color": 7
+      }
+    },
+    {
+      "id": "m1-4",
+      "name": "Decide Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1320,
+        -180
+      ],
+      "parameters": {
+        "content": "## Decide what runs now\nChecks today's enabled rules (workflow timezone). Rules that ran, gave up, were skipped or are in progress this period are left alone; failed calls are retried. Invalid rules and bad holiday rows are reported once a day; a fixed rule runs the same day.",
+        "width": 460,
+        "height": 640,
+        "color": 7
+      }
+    },
+    {
+      "id": "m1-5",
+      "name": "Call Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1820,
+        -180
+      ],
+      "parameters": {
+        "content": "## Call the jobs\nThe run log row is set to started before each POST (body: rule_name, period, scheduled_date, due_date, attempt, test), so re-runs never call twice. Timeouts are retried even if the job got the call. A row left started (result unsaved) is reported unknown, never retried.",
+        "width": 1120,
+        "height": 640,
+        "color": 7
+      }
+    },
+    {
+      "id": "m1-6",
+      "name": "Report Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2980,
+        -180
+      ],
+      "parameters": {
+        "content": "## Email the summary\nOne email per run that did something. If it cannot be sent, the run fails; the results are already in the run log. A failed run log write also fails the run.",
+        "width": 700,
+        "height": 640,
+        "color": 7
+      }
+    },
+    {
+      "id": "m1-7",
+      "name": "Run Once to Create Tables",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -400,
+        -380
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "m1-8",
+      "name": "Every Hour at Minute 5",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -400,
+        -40
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1,
+              "triggerAtMinute": 5
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "m1-9",
+      "name": "Schedule Settings",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -180,
+        -40
+      ],
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "s1",
+              "name": "rules_table_name",
+              "type": "string",
+              "value": "job_rules"
+            },
+            {
+              "id": "s2",
+              "name": "holidays_table_name",
+              "type": "string",
+              "value": "job_holidays"
+            },
+            {
+              "id": "s3",
+              "name": "run_log_table_name",
+              "type": "string",
+              "value": "job_run_log"
+            },
+            {
+              "id": "s4",
+              "name": "working_days",
+              "type": "string",
+              "value": "Mon,Tue,Wed,Thu,Fri"
+            },
+            {
+              "id": "s5",
+              "name": "max_attempts",
+              "type": "number",
+              "value": 3
+            },
+            {
+              "id": "s6",
+              "name": "job_timeout_seconds",
+              "type": "number",
+              "value": 30
+            },
+            {
+              "id": "s7",
+              "name": "email_to",
+              "type": "string",
+              "value": "ops@example.com"
+            },
+            {
+              "id": "s8",
+              "name": "email_from",
+              "type": "string",
+              "value": "n8n@example.com"
+            },
+            {
+              "id": "s9",
+              "name": "test_date",
+              "type": "string",
+              "value": ""
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "m1-10",
+      "name": "Setup Run?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        40,
+        -40
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "m1-11",
+              "leftValue": "={{ $('Run Once to Create Tables').isExecuted }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "m1-12",
+      "name": "Create Rules Table",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        40,
+        -380
+      ],
+      "parameters": {
+        "resource": "table",
+        "operation": "create",
+        "tableName": "={{ $('Schedule Settings').first().json.rules_table_name.trim() }}",
+        "columns": {
+          "column": [
+            {
+              "name": "rule_name",
+              "type": "string"
+            },
+            {
+              "name": "rule",
+              "type": "string"
+            },
+            {
+              "name": "n",
+              "type": "number"
+            },
+            {
+              "name": "weekday",
+              "type": "string"
+            },
+            {
+              "name": "shift",
+              "type": "string"
+            },
+            {
+              "name": "run_hour",
+              "type": "number"
+            },
+            {
+              "name": "webhook_url",
+              "type": "string"
+            },
+            {
+              "name": "enabled",
+              "type": "boolean"
+            }
+          ]
+        },
+        "options": {
+          "createIfNotExists": true
+        }
+      }
+    },
+    {
+      "id": "m1-13",
+      "name": "Create Holidays Table",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        260,
+        -380
+      ],
+      "parameters": {
+        "resource": "table",
+        "operation": "create",
+        "tableName": "={{ $('Schedule Settings').first().json.holidays_table_name.trim() }}",
+        "columns": {
+          "column": [
+            {
+              "name": "holiday_date",
+              "type": "string"
+            },
+            {
+              "name": "name",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {
+          "createIfNotExists": true
+        }
+      }
+    },
+    {
+      "id": "m1-14",
+      "name": "Create Run Log Table",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        480,
+        -380
+      ],
+      "parameters": {
+        "resource": "table",
+        "operation": "create",
+        "tableName": "={{ $('Schedule Settings').first().json.run_log_table_name.trim() }}",
+        "columns": {
+          "column": [
+            {
+              "name": "rule_name",
+              "type": "string"
+            },
+            {
+              "name": "period",
+              "type": "string"
+            },
+            {
+              "name": "scheduled_date",
+              "type": "string"
+            },
+            {
+              "name": "due_date",
+              "type": "string"
+            },
+            {
+              "name": "status",
+              "type": "string"
+            },
+            {
+              "name": "attempts",
+              "type": "number"
+            },
+            {
+              "name": "detail",
+              "type": "string"
+            },
+            {
+              "name": "webhook_url",
+              "type": "string"
+            },
+            {
+              "name": "logged_at",
+              "type": "date"
+            },
+            {
+              "name": "finished_at",
+              "type": "date"
+            }
+          ]
+        },
+        "options": {
+          "createIfNotExists": true
+        }
+      }
+    },
+    {
+      "id": "m1-15",
+      "name": "Check Rules Table Empty",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "position": [
+        700,
+        -380
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Create Rules Table').first().json.id }}"
+        },
+        "matchType": "anyCondition",
+        "filters": {},
+        "returnAll": false,
+        "limit": 1
+      }
+    },
+    {
+      "id": "m1-16",
+      "name": "Rules Table Empty?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        920,
+        -380
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "m1-17",
+              "leftValue": "={{ $json.id === undefined }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "m1-18",
+      "name": "Example Rules",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1140,
+        -380
+      ],
+      "parameters": {
+        "jsCode": "// Disabled example rules, added only when the rules table is empty. Replace the webhook URLs, then set enabled to true.\nconst url = 'https://n8n.example.com/webhook/';\nreturn [\n  { rule_name: 'Month-end report', rule: 'working_day_of_month', n: -1, weekday: '', shift: '', run_hour: 8, webhook_url: url + 'month-end-report' },\n  { rule_name: 'Payroll run', rule: 'working_day_of_month', n: 1, weekday: '', shift: '', run_hour: 7, webhook_url: url + 'payroll' },\n  { rule_name: 'Third Wednesday review', rule: 'weekday_of_month', n: 3, weekday: 'Wed', shift: 'next', run_hour: 9, webhook_url: url + 'review' },\n  { rule_name: 'Quarter close', rule: 'working_day_of_quarter', n: -1, weekday: '', shift: '', run_hour: 16, webhook_url: url + 'quarter-close' },\n  { rule_name: 'Daily stock sync', rule: 'every_working_day', n: 0, weekday: '', shift: '', run_hour: 6, webhook_url: url + 'stock-sync' },\n].map((r) => ({ json: { ...r, enabled: false } }));"
+      }
+    },
+    {
+      "id": "m1-19",
+      "name": "Add Example Rules",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        1360,
+        -380
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "insert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Create Rules Table').first().json.id }}"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "rule_name": "={{ $json.rule_name }}",
+            "rule": "={{ $json.rule }}",
+            "n": "={{ $json.n }}",
+            "weekday": "={{ $json.weekday }}",
+            "shift": "={{ $json.shift }}",
+            "run_hour": "={{ $json.run_hour }}",
+            "webhook_url": "={{ $json.webhook_url }}",
+            "enabled": "={{ $json.enabled }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "rule_name",
+              "displayName": "rule_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "rule",
+              "displayName": "rule",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "n",
+              "displayName": "n",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "weekday",
+              "displayName": "weekday",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "shift",
+              "displayName": "shift",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "run_hour",
+              "displayName": "run_hour",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "webhook_url",
+              "displayName": "webhook_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "enabled",
+              "displayName": "enabled",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "boolean",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "m1-20",
+      "name": "Find Data Tables",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "position": [
+        260,
+        -40
+      ],
+      "parameters": {
+        "resource": "table",
+        "operation": "list",
+        "returnAll": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "m1-21",
+      "name": "Tables Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "executeOnce": true,
+      "position": [
+        480,
+        -40
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "m1-22",
+              "leftValue": "={{ ['rules_table_name', 'holidays_table_name', 'run_log_table_name'].every((k) => $('Find Data Tables').all().some((t) => t.json.name === String($('Schedule Settings').first().json[k] ?? '').trim())) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "m1-23",
+      "name": "Build Missing Tables Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        700,
+        200
+      ],
+      "parameters": {
+        "jsCode": "// One or more data tables were not found by exact name: no job can be checked, so say so by email and fail the run.\nconst s = $('Schedule Settings').first().json;\nconst found = $('Find Data Tables').all().map((t) => t.json.name);\nconst esc = (v) => String(v ?? '').replace(/[&<>\"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', \"'\": '&#39;' }[c]));\nconst missing = ['rules_table_name', 'holidays_table_name', 'run_log_table_name'].map((k) => String(s[k] ?? '').trim()).filter((name) => !found.includes(name));\nconst message = 'Data tables not found: ' + missing.join(', ') + '. No jobs were checked. Execute \"Run Once to Create Tables\" or fix the names in Schedule Settings.';\nreturn [{ json: { tables_missing: true, message, subject: 'Scheduled jobs NOT checked: data table missing', html: '<p>' + esc(message) + '</p>' } }];"
+      }
+    },
+    {
+      "id": "m1-24",
+      "name": "Read Job Rules",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "position": [
+        700,
+        -40
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Data Tables').all().find((t) => t.json.name === $('Schedule Settings').first().json.rules_table_name.trim()).json.id }}"
+        },
+        "matchType": "anyCondition",
+        "filters": {},
+        "returnAll": true
+      }
+    },
+    {
+      "id": "m1-25",
+      "name": "Read Holidays",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "position": [
+        920,
+        -40
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Data Tables').all().find((t) => t.json.name === $('Schedule Settings').first().json.holidays_table_name.trim()).json.id }}"
+        },
+        "matchType": "anyCondition",
+        "filters": {},
+        "returnAll": true
+      }
+    },
+    {
+      "id": "m1-26",
+      "name": "Read Run Log",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "position": [
+        1140,
+        -40
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Data Tables').all().find((t) => t.json.name === $('Schedule Settings').first().json.run_log_table_name.trim()).json.id }}"
+        },
+        "matchType": "anyCondition",
+        "filters": {},
+        "returnAll": true
+      }
+    },
+    {
+      "id": "m1-27",
+      "name": "Decide What Runs Now",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "executeOnce": true,
+      "position": [
+        1380,
+        -40
+      ],
+      "parameters": {
+        "jsCode": "// Decides what this run does for each enabled rule: call its job, report a skipped date, report an invalid rule, or nothing.\n// All dates are calendar dates in the workflow timezone ($now.zoneName), never UTC.\nconst s = $('Schedule Settings').first().json;\nconst zone = $now.zoneName;\nconst DAYS = { mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6, sun: 7 };\nconst DAY_NAMES = ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];\nconst RULES = ['working_day_of_month', 'working_day_of_quarter', 'weekday_of_month', 'every_working_day'];\nconst BLOCKING = ['ran', 'started', 'unknown', 'gave_up', 'skipped'];\n\n// Settings\nconst testDate = String(s.test_date ?? '').trim();\nlet now = $now;\nif (testDate) {\n  const m = testDate.match(/^(\\d{4}-\\d{2}-\\d{2})(?:[T ](\\d{2}):(\\d{2}))?$/);\n  let d = m ? DateTime.fromISO(m[1], { zone }) : null;\n  if (d && d.isValid) d = m[2] ? (Number(m[2]) < 24 && Number(m[3]) < 60 ? d.set({ hour: Number(m[2]), minute: Number(m[3]) }) : null) : d.set({ hour: $now.hour, minute: $now.minute });\n  if (!d || !d.isValid || d.toISODate() !== m[1]) throw new Error('test_date \"' + testDate + '\" is not a valid date. Use YYYY-MM-DD or YYYY-MM-DDTHH:mm, or leave it empty.');\n  now = d;\n}\nconst workDays = new Set();\nfor (const t of String(s.working_days ?? '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean)) {\n  if (!DAYS[t]) throw new Error('working_days: \"' + t + '\" is not a day. Use Mon, Tue, Wed, Thu, Fri, Sat, Sun separated by commas.');\n  workDays.add(DAYS[t]);\n}\nif (!workDays.size) throw new Error('working_days is empty. Example: Mon,Tue,Wed,Thu,Fri');\nconst maxAttempts = Number(s.max_attempts);\nif (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 24) throw new Error('max_attempts must be a whole number from 1 to 24.');\nconst timeout = Number(s.job_timeout_seconds);\nif (!Number.isFinite(timeout) || timeout < 1 || timeout > 300) throw new Error('job_timeout_seconds must be a number from 1 to 300.');\nfor (const k of ['email_to', 'email_from']) if (!/^[^\\s@,]+@[^\\s@,]+\\.[^\\s@,]+$/.test(String(s[k] ?? '').trim())) throw new Error(k + ' must be one email address.');\n\nconst today = now.toISODate();\nconst key = (k) => (testDate ? k + ' test' : k);\n// Invalid reports have their own period (today + ' invalid'), so they never block or hide a job's own run log row.\nconst invalidKey = key(today + ' invalid');\n\n// Holidays: holiday_date as YYYY-MM-DD text. Bad rows are ignored and reported.\nconst holidays = new Map(), badHolidays = [];\nfor (const h of $('Read Holidays').all().map((i) => i.json).filter((r) => r.id !== undefined)) {\n  const raw = String(h.holiday_date ?? '').trim();\n  if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(raw) || !DateTime.fromISO(raw, { zone }).isValid) { badHolidays.push('row ' + h.id + ' \"' + raw + '\"'); continue; }\n  holidays.set(raw, String(h.name ?? '').trim() || 'holiday');\n}\nconst isWorking = (d) => workDays.has(d.weekday) && !holidays.has(d.toISODate());\nconst whyNot = (d) => (holidays.has(d.toISODate()) ? 'holiday: ' + holidays.get(d.toISODate()) : DAY_NAMES[d.weekday] + ' is not in working_days');\nconst daysIn = (start, end) => { const out = []; for (let d = start; d < end; d = d.plus({ days: 1 })) out.push(d); return out; };\n\n// Run log: one row per rule and period.\nconst log = $('Read Run Log').all().map((i) => i.json).filter((r) => r.id !== undefined);\nconst logFor = (name, period) => log.filter((r) => r.rule_name === name && r.period === period).sort((a, b) => b.id - a.id);\n\nconst ord = (k) => (k === -1 ? 'last' : k < 0 ? (-k) + (['', 'st', 'nd', 'rd'][-k] || 'th') + '-last' : k + (['', 'st', 'nd', 'rd'][k] || 'th'));\nconst out = [];\nconst report = (row, status, detail, extra = {}) => out.push({ json: { action: status === 'started' ? 'call' : 'report', status, rule_name: row.name, rule_text: row.text || '', period: invalidKey, scheduled_date: today, due_date: today, attempt: 0, webhook_url: row.url || '', detail, ...extra } });\n\n// A row still \"started\" well after its call must have ended: the result was never saved. Report it once as \"unknown\"; it is never called again.\nfor (const e of log) {\n  if (e.status !== 'started' || !(Date.now() - new Date(e.logged_at).getTime() > (timeout + 120) * 1000)) continue;\n  out.push({ json: { action: 'report', status: 'unknown', rule_name: e.rule_name, rule_text: '', period: e.period, scheduled_date: e.scheduled_date, due_date: e.due_date, attempt: Number(e.attempts) || 0, webhook_url: e.webhook_url,\n    detail: 'The result of attempt ' + e.attempts + ' (called ' + DateTime.fromISO(new Date(e.logged_at).toISOString()).setZone(zone).toFormat('yyyy-MM-dd HH:mm') + ') was not saved. Check whether the job ran; delete this run log row to let it run again.' } });\n}\nif (badHolidays.length && !logFor('(holidays table)', invalidKey).length) {\n  report({ name: '(holidays table)' }, 'invalid', 'Ignored holiday rows (holiday_date must be YYYY-MM-DD): ' + badHolidays.join(', '));\n}\n\nconst rows = $('Read Job Rules').all().map((i) => i.json).filter((r) => r.id !== undefined && (r.enabled === true || String(r.enabled).toLowerCase() === 'true'));\nconst nameCount = {};\nfor (const r of rows) { const k = String(r.rule_name ?? '').trim().toLowerCase(); nameCount[k] = (nameCount[k] || 0) + 1; }\n\nfor (const r of rows) {\n  const name = String(r.rule_name ?? '').trim() || 'row ' + r.id;\n  const rule = String(r.rule ?? '').trim().toLowerCase();\n  const nn = Number(r.n);\n  const wd = DAYS[String(r.weekday ?? '').trim().toLowerCase()];\n  const shift = String(r.shift ?? '').trim().toLowerCase() || 'skip';\n  const hourRaw = r.run_hour === null || r.run_hour === undefined || String(r.run_hour).trim() === '' ? 0 : Number(r.run_hour);\n  const url = String(r.webhook_url ?? '').trim();\n  const problems = [];\n  if (!String(r.rule_name ?? '').trim()) problems.push('rule_name is empty');\n  else if (nameCount[name.toLowerCase()] > 1) problems.push('rule_name is used by more than one enabled rule');\n  if (!RULES.includes(rule)) problems.push('rule must be one of ' + RULES.join(', '));\n  const maxN = rule === 'working_day_of_quarter' ? 66 : 23;\n  if ((rule === 'working_day_of_month' || rule === 'working_day_of_quarter') && (!Number.isInteger(nn) || nn === 0 || Math.abs(nn) > maxN)) problems.push('n must be a whole number from 1 to ' + maxN + ' or -1 to -' + maxN + ' (1 = first, -1 = last)');\n  if (rule === 'weekday_of_month' && !([1, 2, 3, 4, 5, -1].includes(nn))) problems.push('n must be 1 to 5, or -1 for the last');\n  if (rule === 'weekday_of_month' && !wd) problems.push('weekday must be Mon, Tue, Wed, Thu, Fri, Sat or Sun');\n  if (rule === 'weekday_of_month' && !['skip', 'next', 'previous'].includes(shift)) problems.push('shift must be skip, next or previous');\n  if (!Number.isInteger(hourRaw) || hourRaw < 0 || hourRaw > 23) problems.push('run_hour must be 0 to 23');\n  if (!/^https?:\\/\\/[^\\s]+$/i.test(url)) problems.push('webhook_url must start with http:// or https://');\n  if (problems.length) {\n    if (!logFor(name, invalidKey).length) report({ name, url }, 'invalid', problems.join('; '));\n    continue;\n  }\n  const text = rule === 'every_working_day' ? 'every working day'\n    : rule === 'weekday_of_month' ? ord(nn) + ' ' + DAY_NAMES[wd] + ' of the month' + (shift === 'skip' ? '' : ', ' + shift + ' working day if not a working day')\n    : ord(nn) + ' working day of the ' + (rule === 'working_day_of_month' ? 'month' : 'quarter');\n\n  // Candidate periods (previous, current, next): a shifted date can fall in a neighbouring month.\n  const hits = [];\n  if (rule === 'every_working_day') {\n    if (isWorking(now)) hits.push({ period: today, date: now, scheduled: now });\n  } else {\n    for (const k of [-1, 0, 1]) {\n      let start, end, period;\n      if (rule === 'working_day_of_quarter') {\n        start = now.startOf('quarter').plus({ quarters: k }).set({ hour: 12 }); end = start.plus({ quarters: 1 });\n        period = start.year + '-Q' + start.quarter;\n      } else {\n        start = now.startOf('month').plus({ months: k }).set({ hour: 12 }); end = start.plus({ months: 1 });\n        period = start.toFormat('yyyy-MM');\n      }\n      const days = daysIn(start, end);\n      if (rule !== 'weekday_of_month') {\n        const w = days.filter(isWorking);\n        const d = nn > 0 ? w[nn - 1] : w[w.length + nn];\n        if (d) hits.push({ period, date: d, scheduled: d });\n        continue;\n      }\n      const same = days.filter((d) => d.weekday === wd);\n      const o = nn > 0 ? same[nn - 1] : same[same.length - 1];\n      if (!o) continue; // e.g. no 5th Wednesday this month: no run for that period\n      if (isWorking(o)) { hits.push({ period, date: o, scheduled: o }); continue; }\n      if (shift === 'skip') { hits.push({ period, date: null, scheduled: o }); continue; }\n      let d = o, guard = 0;\n      do { d = d.plus({ days: shift === 'next' ? 1 : -1 }); } while (!isWorking(d) && ++guard < 400);\n      if (isWorking(d)) hits.push({ period, date: d, scheduled: o });\n    }\n  }\n  for (const h of hits) {\n    const period = key(h.period);\n    const sched = h.scheduled.toISODate();\n    if (!h.date) {\n      if (sched === today && !logFor(name, period).length) out.push({ json: { action: 'report', status: 'skipped', rule_name: name, rule_text: text, period, scheduled_date: sched, due_date: '', attempt: 0, webhook_url: url, detail: 'Not run: ' + whyNot(h.scheduled) + ' (shift: skip).' } });\n      continue;\n    }\n    if (h.date.toISODate() !== today || now.hour < hourRaw) continue;\n    const entries = logFor(name, period);\n    if (entries.some((e) => BLOCKING.includes(e.status))) continue; // already handled this period: never call twice\n    const attempt = (entries.length ? Number(entries[0].attempts) || 0 : 0) + 1;\n    out.push({ json: { action: 'call', status: 'started', rule_name: name, rule_text: text, period, scheduled_date: sched, due_date: today, attempt, webhook_url: url,\n      detail: 'Calling job (attempt ' + attempt + ' of ' + maxAttempts + ')' + (sched !== today ? ', moved from ' + sched + ' (' + whyNot(h.scheduled) + ')' : '') + '.' } });\n  }\n}\nreturn out;"
+      }
+    },
+    {
+      "id": "m1-28",
+      "name": "Write Run Log Entry",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        1600,
+        -40
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "upsert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Data Tables').all().find((t) => t.json.name === $('Schedule Settings').first().json.run_log_table_name.trim()).json.id }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "rule_name",
+              "condition": "eq",
+              "keyValue": "={{ $json.rule_name }}"
+            },
+            {
+              "keyName": "period",
+              "condition": "eq",
+              "keyValue": "={{ $json.period }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "rule_name": "={{ $json.rule_name }}",
+            "period": "={{ $json.period }}",
+            "scheduled_date": "={{ $json.scheduled_date }}",
+            "due_date": "={{ $json.due_date }}",
+            "status": "={{ $json.status }}",
+            "attempts": "={{ $json.attempt }}",
+            "detail": "={{ $json.detail }}",
+            "webhook_url": "={{ $json.webhook_url }}",
+            "logged_at": "={{ $now.toUTC().toISO() }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "rule_name",
+              "displayName": "rule_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "period",
+              "displayName": "period",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "scheduled_date",
+              "displayName": "scheduled_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "due_date",
+              "displayName": "due_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "attempts",
+              "displayName": "attempts",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "detail",
+              "displayName": "detail",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "webhook_url",
+              "displayName": "webhook_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "logged_at",
+              "displayName": "logged_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "m1-29",
+      "name": "Pick Jobs to Call",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1880,
+        -40
+      ],
+      "parameters": {
+        "jsCode": "// Jobs to call are the run log rows just set to \"started\". Everything else is only reported.\nconst jobs = [];\n$input.all().forEach((it, i) => { if (it.json.status === 'started') jobs.push({ json: it.json, pairedItem: { item: i } }); });\nreturn jobs.length ? jobs : [{ json: { no_jobs: true } }];"
+      }
+    },
+    {
+      "id": "m1-30",
+      "name": "Any Jobs to Call?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2100,
+        -40
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "m1-31",
+              "leftValue": "={{ $json.no_jobs !== true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "m1-32",
+      "name": "Call Job Webhook",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "onError": "continueRegularOutput",
+      "position": [
+        2320,
+        -40
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.webhook_url }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ rule_name: $json.rule_name, period: $json.period, scheduled_date: $json.scheduled_date, due_date: $json.due_date, attempt: $json.attempts, test: String($('Schedule Settings').first().json.test_date ?? '').trim() !== '' }) }}",
+        "options": {
+          "timeout": "={{ Number($('Schedule Settings').first().json.job_timeout_seconds) * 1000 }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "text",
+              "outputPropertyName": "body"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "m1-33",
+      "name": "Check Job Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2540,
+        -40
+      ],
+      "parameters": {
+        "jsCode": "// One HTTP result per job, in the same order. 2xx = ran; anything else = failed, or gave_up after max_attempts.\nconst max = Number($('Schedule Settings').first().json.max_attempts);\nconst jobs = $('Pick Jobs to Call').all();\nreturn $input.all().map((it, i) => {\n  const job = jobs[i].json;\n  const r = it.json;\n  let ok = false, detail;\n  if (r.statusCode === undefined) {\n    const e = r.error || {};\n    detail = 'Request failed: ' + String(e.message || e.description || JSON.stringify(e)).slice(0, 300);\n  } else if (Number(r.statusCode) >= 200 && Number(r.statusCode) < 300) { ok = true; detail = 'HTTP ' + r.statusCode; }\n  else detail = 'HTTP ' + r.statusCode + ': ' + String(typeof r.body === 'string' ? r.body : JSON.stringify(r.body ?? '')).slice(0, 200);\n  const status = ok ? 'ran' : Number(job.attempts) >= max ? 'gave_up' : 'failed';\n  if (!ok) detail += status === 'gave_up' ? ' (attempt ' + job.attempts + ' of ' + max + ', no more retries this period)' : ' (attempt ' + job.attempts + ' of ' + max + ', retried at the next hourly run while today is the due date)';\n  return { json: { id: job.id, rule_name: job.rule_name, period: job.period, status, detail }, pairedItem: { item: i } };\n});"
+      }
+    },
+    {
+      "id": "m1-34",
+      "name": "Save Job Result",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        2760,
+        -40
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Data Tables').all().find((t) => t.json.name === $('Schedule Settings').first().json.run_log_table_name.trim()).json.id }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "condition": "eq",
+              "keyValue": "={{ $json.id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "status": "={{ $json.status }}",
+            "detail": "={{ $json.detail }}",
+            "finished_at": "={{ $now.toUTC().toISO() }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "detail",
+              "displayName": "detail",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "finished_at",
+              "displayName": "finished_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "m1-35",
+      "name": "Build Summary Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "executeOnce": true,
+      "position": [
+        3040,
+        -40
+      ],
+      "parameters": {
+        "jsCode": "// One email for this run: every job called (ran, failed, gave_up), skipped date and invalid rule.\nconst s = $('Schedule Settings').first().json;\nconst esc = (v) => String(v ?? '').replace(/[&<>\"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', \"'\": '&#39;' }[c]));\nconst plan = $('Decide What Runs Now').all().map((i) => i.json);\nconst results = $('Save Job Result').isExecuted ? $('Save Job Result').all().map((i) => i.json).filter((r) => r.id !== undefined) : [];\nconst rows = $('Write Run Log Entry').all().map((i) => i.json).map((r) => (r.status === 'started' ? results.find((x) => x.id === r.id) || r : r));\nconst order = { failed: 0, gave_up: 1, unknown: 2, started: 3, invalid: 4, ran: 5, skipped: 6 };\nrows.sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9));\nconst count = (st) => rows.filter((r) => r.status === st).length;\nconst parts = [['ran', 'ran'], ['failed', 'failed'], ['gave_up', 'gave up'], ['unknown', 'unknown'], ['skipped', 'skipped'], ['invalid', 'invalid']].filter(([st]) => count(st)).map(([st, label]) => count(st) + ' ' + label);\nconst test = String(s.test_date ?? '').trim();\nconst day = test ? test.slice(0, 10) : $now.toISODate();\nconst subject = (test ? '[TEST ' + test + '] ' : '') + 'Scheduled jobs ' + day + ': ' + parts.join(', ');\nconst tr = rows.map((r) => {\n  const p = plan.find((x) => x.rule_name === r.rule_name && x.period === r.period) || {};\n  return '<tr><td>' + esc(r.rule_name) + '</td><td>' + esc(p.rule_text) + '</td><td>' + esc(r.period) + '</td><td>' + esc(r.due_date || r.scheduled_date) + '</td><td><b>' + esc(r.status) + '</b></td><td>' + esc(r.detail) + '</td></tr>';\n}).join('');\nconst html = '<p>' + esc(parts.join(', ')) + ' (timezone ' + esc($now.zoneName) + ').</p>'\n  + '<table border=\"1\" cellpadding=\"4\" cellspacing=\"0\"><tr><th>Rule</th><th>When</th><th>Period</th><th>Date</th><th>Status</th><th>Detail</th></tr>' + tr + '</table>'\n  + '<p>Each rule runs once per period. To let a job run again in the same period, delete its run log row.</p>';\nreturn [{ json: { tables_missing: false, subject, html } }];"
+      }
+    },
+    {
+      "id": "m1-36",
+      "name": "Send Summary Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "onError": "continueErrorOutput",
+      "position": [
+        3260,
+        -40
+      ],
+      "parameters": {
+        "fromEmail": "={{ $('Schedule Settings').first().json.email_from.trim() }}",
+        "toEmail": "={{ $('Schedule Settings').first().json.email_to.trim() }}",
+        "subject": "={{ $json.subject }}",
+        "emailFormat": "html",
+        "html": "={{ $json.html }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "smtp": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "m1-37",
+      "name": "Tables Were Missing?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3480,
+        -40
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "m1-38",
+              "leftValue": "={{ $('Build Missing Tables Alert').isExecuted }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "m1-39",
+      "name": "Stop: Tables Missing",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        3480,
+        180
+      ],
+      "parameters": {
+        "errorMessage": "={{ $('Build Missing Tables Alert').first().json.message }}"
+      }
+    },
+    {
+      "id": "m1-40",
+      "name": "Stop: Email Failed",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        3260,
+        200
+      ],
+      "parameters": {
+        "errorMessage": "={{ 'Could not send the email \"' + ($('Build Missing Tables Alert').isExecuted ? $('Build Missing Tables Alert').first().json.subject : $('Build Summary Email').first().json.subject) + '\": ' + String(typeof $json.error === 'string' ? $json.error : $json.error?.message || JSON.stringify($json.error ?? 'unknown SMTP error')).slice(0, 300) + ($('Build Missing Tables Alert').isExecuted ? '' : ' The job results are saved in the run log.') }}"
+      }
+    }
+  ],
+  "connections": {
+    "Run Once to Create Tables": {
+      "main": [
+        [
+          {
+            "node": "Schedule Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every Hour at Minute 5": {
+      "main": [
+        [
+          {
+            "node": "Schedule Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Settings": {
+      "main": [
+        [
+          {
+            "node": "Setup Run?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Setup Run?": {
+      "main": [
+        [
+          {
+            "node": "Create Rules Table",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Find Data Tables",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Rules Table": {
+      "main": [
+        [
+          {
+            "node": "Create Holidays Table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Holidays Table": {
+      "main": [
+        [
+          {
+            "node": "Create Run Log Table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Run Log Table": {
+      "main": [
+        [
+          {
+            "node": "Check Rules Table Empty",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Rules Table Empty": {
+      "main": [
+        [
+          {
+            "node": "Rules Table Empty?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rules Table Empty?": {
+      "main": [
+        [
+          {
+            "node": "Example Rules",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Example Rules": {
+      "main": [
+        [
+          {
+            "node": "Add Example Rules",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Data Tables": {
+      "main": [
+        [
+          {
+            "node": "Tables Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tables Found?": {
+      "main": [
+        [
+          {
+            "node": "Read Job Rules",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Missing Tables Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Missing Tables Alert": {
+      "main": [
+        [
+          {
+            "node": "Send Summary Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Job Rules": {
+      "main": [
+        [
+          {
+            "node": "Read Holidays",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Holidays": {
+      "main": [
+        [
+          {
+            "node": "Read Run Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Run Log": {
+      "main": [
+        [
+          {
+            "node": "Decide What Runs Now",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decide What Runs Now": {
+      "main": [
+        [
+          {
+            "node": "Write Run Log Entry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Run Log Entry": {
+      "main": [
+        [
+          {
+            "node": "Pick Jobs to Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick Jobs to Call": {
+      "main": [
+        [
+          {
+            "node": "Any Jobs to Call?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Jobs to Call?": {
+      "main": [
+        [
+          {
+            "node": "Call Job Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Summary Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Job Webhook": {
+      "main": [
+        [
+          {
+            "node": "Check Job Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Job Response": {
+      "main": [
+        [
+          {
+            "node": "Save Job Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Job Result": {
+      "main": [
+        [
+          {
+            "node": "Build Summary Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Summary Email": {
+      "main": [
+        [
+          {
+            "node": "Send Summary Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Summary Email": {
+      "main": [
+        [
+          {
+            "node": "Tables Were Missing?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stop: Email Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tables Were Missing?": {
+      "main": [
+        [
+          {
+            "node": "Stop: Tables Missing",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {}
+}

@@ -1,0 +1,2700 @@
+{
+  "name": "n8n Form Quote Request to Emailed PDF with Gotenberg",
+  "nodes": [
+    {
+      "id": "34952a36-8140-47a0-b029-46bf3de0ca2e",
+      "name": "Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1120,
+        -620
+      ],
+      "parameters": {
+        "content": "### How it works\n1. The public form asks for name, email and company; page two lists active products with prices.\n2. The server checks every value (empty, whitespace-only, email format, unknown products, quantities). Product mistakes re-open page two, 3 tries.\n3. A compare-and-set counter update claims the next number, retried on collision. Numbers are distinct and consecutive; a quote that fails to save (you are told) or a crash before saving (silent) leaves a gap.\n4. The quote is saved with catalog prices, rendered to escaped HTML and converted to PDF by Gotenberg.\n5. The PDF goes to the customer, blind copy to you. The row becomes `sent` or `failed`.\n\n### Setup\n1. Run Gotenberg (`gotenberg/gotenberg:8`) where n8n can reach it; set `gotenberg_url`.\n2. In **Quote Settings** set `products_table`, `quotes_table`, `counter_table`, `business_name`, `business_details`, `quote_terms`, `currency`, `tax_label`, `tax_rate_percent`, `validity_days`, `quote_prefix`, `max_quantity` (per line), `form_lines` (1 to 10), `owner_email`, `from_email` (accepted by your SMTP server), `paper_size` (A4/Letter), `pdf_margin` (0.5in or 1cm).\n3. Attach SMTP to both email nodes.\n4. Execute **Run Once to Create Tables** (needs data table create permission); it adds the counter row and example products.\n5. Set the timezone in Workflow Settings, publish, and share the **Quote Request Form** Production URL. Republish after changes.\n\n### Customization\nEdit products in the catalog table (`active` false hides one). `last_number` sets where numbering continues.\n\n### Limitations\nThe form is public: anyone can request a quote for any address. Add a CAPTCHA or rate limit if abuse is a concern. Page two expires after 24 hours; you are alerted, and a late submit only shows n8n's \"Your response has been recorded\".\n\nTested on n8n 2.48.7.",
+        "width": 660,
+        "height": 1560
+      }
+    },
+    {
+      "id": "20ae8465-17ee-4110-ad69-affa6728b99b",
+      "name": "Setup Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -420,
+        -620
+      ],
+      "parameters": {
+        "content": "## One-time setup\nCreates the three tables (skipped if they exist), adds the counter row if missing and five example products when the catalog is empty.",
+        "width": 2240,
+        "height": 300,
+        "color": 7
+      }
+    },
+    {
+      "id": "88719c57-7df3-4f86-a9a6-44de5f947d90",
+      "name": "Customer Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -420,
+        -260
+      ],
+      "parameters": {
+        "content": "## Check the customer\nName, email and company are trimmed and checked. Empty, whitespace-only, too long or malformed values end on a page listing the problems.",
+        "width": 1180,
+        "height": 560,
+        "color": 7
+      }
+    },
+    {
+      "id": "69cd8702-67f2-4bdc-bec3-a3b234e520bd",
+      "name": "Catalog Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        800,
+        -260
+      ],
+      "parameters": {
+        "content": "## Load tables and catalog\nFinds the tables by exact name and checks the settings. Active products become page two. A missing table, a failed table lookup, a bad setting or an empty catalog alerts you.",
+        "width": 1300,
+        "height": 560,
+        "color": 7
+      }
+    },
+    {
+      "id": "262e843f-995d-4c8b-aab2-795a9070584b",
+      "name": "Products Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2140,
+        -260
+      ],
+      "parameters": {
+        "content": "## Choose products\nEach line is checked against the catalog shown. Mistakes re-open the page, up to 3 tries. A page that is already open keeps the products and prices it showed, for up to 24 hours. After that you get an alert with the customer's details.",
+        "width": 1300,
+        "height": 560,
+        "color": 7
+      }
+    },
+    {
+      "id": "da505c6f-586e-41f7-a753-2f50c8f28c42",
+      "name": "Number Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        3480,
+        -260
+      ],
+      "parameters": {
+        "content": "## Claim the quote number\nUpdates the counter only if it still holds the value just read. If another request got there first, it waits up to a second and tries again, 10 tries.",
+        "width": 1300,
+        "height": 560,
+        "color": 7
+      }
+    },
+    {
+      "id": "1671fd4a-b3c0-4368-83d3-662cf987f419",
+      "name": "Quote Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        4820,
+        -260
+      ],
+      "parameters": {
+        "content": "## Save, render, email\nSaves the quote, sends its HTML to Gotenberg and emails the PDF. A Gotenberg error, a non-PDF answer or a rejected email marks the quote failed.",
+        "width": 2480,
+        "height": 560,
+        "color": 7
+      }
+    },
+    {
+      "id": "2219d0c5-927f-474e-8593-2b46a65d298b",
+      "name": "Alert Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        4820,
+        340
+      ],
+      "parameters": {
+        "content": "## Alert and result page\nYou are emailed about setup or table problems, an empty catalog, an expired page two, no quote number, an unsaved quote, and PDF, email or status failures. A rejected owner copy is only noted in `detail`. If the alert fails, the execution fails.",
+        "width": 1420,
+        "height": 400,
+        "color": 7
+      }
+    },
+    {
+      "id": "bc3366cb-3e75-4101-8cda-598e38366f15",
+      "name": "Run Once to Create Tables",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -360,
+        -500
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "79e5560d-d9d5-4fa1-acd5-a221bde0a7ab",
+      "name": "Quote Request Form",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.3,
+      "position": [
+        -360,
+        -120
+      ],
+      "parameters": {
+        "formTitle": "Request a quote",
+        "formDescription": "Tell us who you are. On the next page you choose products and quantities, and we email you a PDF quote.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Your Name",
+              "fieldType": "text",
+              "requiredField": true,
+              "placeholder": "Jane Smith"
+            },
+            {
+              "fieldLabel": "Your Email",
+              "fieldType": "email",
+              "requiredField": true,
+              "placeholder": "jane@example.com"
+            },
+            {
+              "fieldLabel": "Company",
+              "fieldType": "text",
+              "requiredField": true,
+              "placeholder": "Example Ltd"
+            }
+          ]
+        },
+        "options": {
+          "appendAttribution": false,
+          "path": "quote-request",
+          "buttonLabel": "Next"
+        }
+      }
+    },
+    {
+      "id": "da2ba7ba-65fa-4b3a-8beb-d614d3f6c20a",
+      "name": "Quote Settings",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -140,
+        -120
+      ],
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "s1",
+              "name": "products_table",
+              "type": "string",
+              "value": "quote_products"
+            },
+            {
+              "id": "s2",
+              "name": "quotes_table",
+              "type": "string",
+              "value": "quotes"
+            },
+            {
+              "id": "s3",
+              "name": "counter_table",
+              "type": "string",
+              "value": "quote_counter"
+            },
+            {
+              "id": "s4",
+              "name": "business_name",
+              "type": "string",
+              "value": "Example Studio"
+            },
+            {
+              "id": "s5",
+              "name": "business_details",
+              "type": "string",
+              "value": "1 Example Street, Springfield\nsales@example.com"
+            },
+            {
+              "id": "s6",
+              "name": "quote_terms",
+              "type": "string",
+              "value": "Prices are per unit. Reply to the email to accept this quote."
+            },
+            {
+              "id": "s7",
+              "name": "currency",
+              "type": "string",
+              "value": "EUR"
+            },
+            {
+              "id": "s8",
+              "name": "tax_label",
+              "type": "string",
+              "value": "VAT"
+            },
+            {
+              "id": "s9",
+              "name": "tax_rate_percent",
+              "type": "number",
+              "value": 20
+            },
+            {
+              "id": "s10",
+              "name": "validity_days",
+              "type": "number",
+              "value": 30
+            },
+            {
+              "id": "s11",
+              "name": "quote_prefix",
+              "type": "string",
+              "value": "Q-"
+            },
+            {
+              "id": "s12",
+              "name": "max_quantity",
+              "type": "number",
+              "value": 1000
+            },
+            {
+              "id": "s13",
+              "name": "form_lines",
+              "type": "number",
+              "value": 5
+            },
+            {
+              "id": "s14",
+              "name": "owner_email",
+              "type": "string",
+              "value": "sales@example.com"
+            },
+            {
+              "id": "s15",
+              "name": "from_email",
+              "type": "string",
+              "value": "Example Studio <quotes@example.com>"
+            },
+            {
+              "id": "s16",
+              "name": "gotenberg_url",
+              "type": "string",
+              "value": "http://gotenberg:3000"
+            },
+            {
+              "id": "s17",
+              "name": "paper_size",
+              "type": "string",
+              "value": "A4"
+            },
+            {
+              "id": "s18",
+              "name": "pdf_margin",
+              "type": "string",
+              "value": "0.5in"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "a3768320-1497-48bb-a945-8c838bd850a0",
+      "name": "Setup Run?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        80,
+        -120
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "3483fd2e-82fb-4f4d-8ad7-a6350f18e7c4",
+              "leftValue": "={{ $('Run Once to Create Tables').isExecuted }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "26c8fb62-1f83-4d92-96da-6c9c86a90939",
+      "name": "Create Products Table",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        -140,
+        -500
+      ],
+      "parameters": {
+        "resource": "table",
+        "operation": "create",
+        "tableName": "={{ $('Quote Settings').first().json.products_table.trim() }}",
+        "columns": {
+          "column": [
+            {
+              "name": "sku",
+              "type": "string"
+            },
+            {
+              "name": "name",
+              "type": "string"
+            },
+            {
+              "name": "unit",
+              "type": "string"
+            },
+            {
+              "name": "unit_price",
+              "type": "number"
+            },
+            {
+              "name": "active",
+              "type": "boolean"
+            }
+          ]
+        },
+        "options": {
+          "createIfNotExists": true
+        }
+      }
+    },
+    {
+      "id": "19d35963-2521-4413-9189-84fadb690fe2",
+      "name": "Create Quotes Table",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        80,
+        -500
+      ],
+      "parameters": {
+        "resource": "table",
+        "operation": "create",
+        "tableName": "={{ $('Quote Settings').first().json.quotes_table.trim() }}",
+        "columns": {
+          "column": [
+            {
+              "name": "quote_number",
+              "type": "string"
+            },
+            {
+              "name": "quote_seq",
+              "type": "number"
+            },
+            {
+              "name": "status",
+              "type": "string"
+            },
+            {
+              "name": "customer_name",
+              "type": "string"
+            },
+            {
+              "name": "customer_email",
+              "type": "string"
+            },
+            {
+              "name": "company",
+              "type": "string"
+            },
+            {
+              "name": "notes",
+              "type": "string"
+            },
+            {
+              "name": "lines",
+              "type": "string"
+            },
+            {
+              "name": "currency",
+              "type": "string"
+            },
+            {
+              "name": "subtotal",
+              "type": "number"
+            },
+            {
+              "name": "tax",
+              "type": "number"
+            },
+            {
+              "name": "total",
+              "type": "number"
+            },
+            {
+              "name": "quote_date",
+              "type": "string"
+            },
+            {
+              "name": "valid_until",
+              "type": "string"
+            },
+            {
+              "name": "detail",
+              "type": "string"
+            },
+            {
+              "name": "finished_at",
+              "type": "date"
+            }
+          ]
+        },
+        "options": {
+          "createIfNotExists": true
+        }
+      }
+    },
+    {
+      "id": "732c344b-9271-4b76-a05e-63c81a2bd19b",
+      "name": "Create Counter Table",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        300,
+        -500
+      ],
+      "parameters": {
+        "resource": "table",
+        "operation": "create",
+        "tableName": "={{ $('Quote Settings').first().json.counter_table.trim() }}",
+        "columns": {
+          "column": [
+            {
+              "name": "last_number",
+              "type": "number"
+            },
+            {
+              "name": "claim_token",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {
+          "createIfNotExists": true
+        }
+      }
+    },
+    {
+      "id": "43f602df-2fa5-4d28-9a41-7a10c3bad063",
+      "name": "Check Counter Row",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "position": [
+        520,
+        -500
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Create Counter Table').first().json.id }}"
+        },
+        "matchType": "anyCondition",
+        "filters": {},
+        "returnAll": false,
+        "limit": 1
+      }
+    },
+    {
+      "id": "266df9ae-a1aa-41c8-ad7f-a46bbd5358c4",
+      "name": "Counter Row Missing?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        740,
+        -500
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "08b8c706-fce4-4958-9361-078afdd72198",
+              "leftValue": "={{ $json.id === undefined }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "d0e95d05-fc71-4ef4-a083-13338b280260",
+      "name": "Add Counter Row",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        960,
+        -440
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "insert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Create Counter Table').first().json.id }}"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "last_number": "={{ 0 }}",
+            "claim_token": ""
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "last_number",
+              "displayName": "last_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "claim_token",
+              "displayName": "claim_token",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "add033ed-70ce-48e2-a26a-ff57c5885231",
+      "name": "Check Products Empty",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "position": [
+        1180,
+        -500
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Create Products Table').first().json.id }}"
+        },
+        "matchType": "anyCondition",
+        "filters": {},
+        "returnAll": false,
+        "limit": 1
+      }
+    },
+    {
+      "id": "e0287556-43fa-4cff-8e07-7188bd45c612",
+      "name": "Products Table Empty?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1400,
+        -500
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "79d05ea9-7e5a-429c-96e9-b504904d9930",
+              "leftValue": "={{ $json.id === undefined }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "8f60a555-9a8d-4c38-a279-440de00aafa7",
+      "name": "Example Products",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1620,
+        -500
+      ],
+      "parameters": {
+        "jsCode": "// Example catalog, added only when the products table is empty. Replace with your own products.\nreturn [\n  { sku: 'WEB-AUDIT', name: 'Website audit', unit: 'each', unit_price: 450 },\n  { sku: 'DEV-HOUR', name: 'Development', unit: 'hour', unit_price: 95 },\n  { sku: 'DESIGN-HOUR', name: 'Design', unit: 'hour', unit_price: 80 },\n  { sku: 'HOSTING-YEAR', name: 'Managed hosting, 12 months', unit: 'year', unit_price: 240 },\n  { sku: 'SUPPORT-MONTH', name: 'Support plan', unit: 'month', unit_price: 120 },\n].map((p) => ({ json: { ...p, active: true } }));"
+      }
+    },
+    {
+      "id": "8b273772-e510-4a64-a7a6-803bf774b37f",
+      "name": "Add Example Products",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        1840,
+        -500
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "insert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Create Products Table').first().json.id }}"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "sku": "={{ $json.sku }}",
+            "name": "={{ $json.name }}",
+            "unit": "={{ $json.unit }}",
+            "unit_price": "={{ $json.unit_price }}",
+            "active": "={{ $json.active }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "sku",
+              "displayName": "sku",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "name",
+              "displayName": "name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "unit",
+              "displayName": "unit",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "unit_price",
+              "displayName": "unit_price",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "active",
+              "displayName": "active",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "boolean",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "1fde37a3-c11a-4b8d-aa11-427d1d60e5fb",
+      "name": "Check Customer Details",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        300,
+        -120
+      ],
+      "parameters": {
+        "jsCode": "// Page one is public, so every value is checked here, not only in the browser.\nconst esc = (v) => String(v ?? '').replace(/[&<>\"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', \"'\": '&#39;' }[c]));\nconst f = $('Quote Request Form').first().json;\nconst clean = (v) => String(v ?? '').replace(/[\\u0000-\\u001f\\u007f]/g, ' ').replace(/\\s+/g, ' ').trim();\nconst name = clean(f['Your Name']);\nconst email = clean(f['Your Email']).toLowerCase();\nconst company = clean(f['Company']);\nconst problems = [];\nif (!name) problems.push('Your name is empty.');\nelse if (name.length > 100) problems.push('Your name is longer than 100 characters.');\nif (!email) problems.push('Your email is empty.');\nelse if (email.length > 254 || !/^[^\\s@<>(),;:\"\\[\\]\\\\]+@[^\\s@<>(),;:\"\\[\\]\\\\]+\\.[a-z]{2,}$/.test(email)) problems.push('Your email is not a valid address.');\nif (!company) problems.push('Company is empty.');\nelse if (company.length > 100) problems.push('Company is longer than 100 characters.');\nreturn [{ json: { ok: problems.length === 0, customer_name: name, customer_email: email, company, problems,\n  page_message: esc(problems.join('\\n')) + '\\n\\nNothing was sent. Please open the form again.' } }];"
+      }
+    },
+    {
+      "id": "379ee2b2-3e92-4a6c-88e7-1d99b739d3e2",
+      "name": "Details OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        520,
+        -120
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d78f96b6-dce7-4358-9500-3e913b28ac44",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "ee7dde5d-bcad-4ceb-ab87-582a82df2603",
+      "name": "Show Details Problem",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.3,
+      "position": [
+        520,
+        100
+      ],
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "text",
+        "completionTitle": "Please check your details",
+        "completionMessage": "={{ $json.page_message }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "8cce7712-04a2-44dd-ac4d-6c568552ed83",
+      "name": "Find Data Tables",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput",
+      "position": [
+        860,
+        -120
+      ],
+      "parameters": {
+        "resource": "table",
+        "operation": "list",
+        "returnAll": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "22374a42-bce0-4ffb-916f-1bcfa4496547",
+      "name": "Check Setup",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "executeOnce": true,
+      "position": [
+        1080,
+        -120
+      ],
+      "parameters": {
+        "jsCode": "// Finds the three data tables by exact name (the list also returns similar names) and checks the settings.\nconst s = $('Quote Settings').first().json;\nconst listed = $('Find Data Tables').all().map((i) => i.json);\nconst listError = listed.find((t) => t.error)?.error;\nconst all = listed.filter((t) => t.id !== undefined);\nconst problems = [], table_ids = {};\nif (listError) problems.push('Listing the data tables failed: ' + String(listError.message ?? listError).slice(0, 300) + '.');\nfor (const [k, key] of [['products', 'products_table'], ['quotes', 'quotes_table'], ['counter', 'counter_table']]) {\n  const name = String(s[key] ?? '').trim();\n  const t = all.find((x) => x.name === name);\n  if (!name) problems.push(key + ' is empty.');\n  else if (!t && !listError) problems.push('Data table \"' + name + '\" (' + key + ') was not found. Execute \"Run Once to Create Tables\" or fix the name.');\n  else if (t) table_ids[k] = t.id;\n}\nconst str = (k) => String(s[k] ?? '').trim();\nconst int = (k, lo, hi) => { const v = Number(s[k]); if (str(k) === '' || !Number.isInteger(v) || v < lo || v > hi) problems.push(k + ' must be a whole number from ' + lo + ' to ' + hi + '.'); };\nif (!/^[^\\s@<>,]+@[^\\s@<>,]+\\.[^\\s@<>,]+$/.test(str('owner_email'))) problems.push('owner_email must be one email address.');\nif (!/^([^<>@]*<[^\\s@<>,]+@[^\\s@<>,]+\\.[^\\s@<>,]+>|[^\\s@<>,]+@[^\\s@<>,]+\\.[^\\s@<>,]+)$/.test(str('from_email'))) problems.push('from_email must be an address or \"Name <address>\".');\nif (!str('business_name')) problems.push('business_name is empty.');\nif (!/^[A-Z]{3}$/.test(str('currency'))) problems.push('currency must be a 3-letter code such as EUR.');\nconst rate = Number(s.tax_rate_percent);\nif (str('tax_rate_percent') === '' || !Number.isFinite(rate) || rate < 0 || rate > 100) problems.push('tax_rate_percent must be a number from 0 to 100.');\nint('validity_days', 1, 365); int('max_quantity', 1, 100000); int('form_lines', 1, 10);\nif (!/^[A-Za-z0-9_-]{0,12}$/.test(str('quote_prefix'))) problems.push('quote_prefix may use up to 12 letters, digits, - or _.');\nif (!/^https?:\\/\\/[^\\s]+$/i.test(str('gotenberg_url'))) problems.push('gotenberg_url must start with http:// or https://.');\nif (!['a4', 'letter'].includes(str('paper_size').toLowerCase())) problems.push('paper_size must be A4 or Letter.');\nif (!/^\\d+(\\.\\d+)?(in|pt|cm)$/.test(str('pdf_margin'))) problems.push('pdf_margin must be a length in in, pt or cm, such as 0.5in or 1cm.');\nreturn [{ json: { setup_ok: problems.length === 0, problems, table_ids } }];"
+      }
+    },
+    {
+      "id": "9c4c116f-3eef-4915-bd3d-14abb4471b61",
+      "name": "Setup OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1300,
+        -120
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "75c419ff-0bcd-4b76-8d50-1cbcbd079957",
+              "leftValue": "={{ $json.setup_ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "cb1be451-3037-41f0-bf6f-51c9dd1d6759",
+      "name": "Load Product Catalog",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput",
+      "position": [
+        1520,
+        -120
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Check Setup').first().json.table_ids.products }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "active",
+              "condition": "isTrue"
+            }
+          ]
+        },
+        "returnAll": true
+      }
+    },
+    {
+      "id": "5f97705b-e41f-4d23-8216-73abb477ad06",
+      "name": "Build Products Page",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "executeOnce": true,
+      "position": [
+        1740,
+        -120
+      ],
+      "parameters": {
+        "jsCode": "// Builds page two from the active catalog rows. On a retry it shows the problems and keeps the customer's choices.\nconst esc = (v) => String(v ?? '').replace(/[&<>\"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', \"'\": '&#39;' }[c]));\nconst s = $('Quote Settings').first().json;\nconst c = $('Check Customer Details').first().json;\nconst cur = String(s.currency).trim();\nconst money = (v) => Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });\nconst catalog = [];\nconst read = $('Load Product Catalog').all().map((i) => i.json);\nconst readError = read.find((r) => r.error)?.error;\nfor (const r of read.filter((r) => r.id !== undefined)) {\n  const sku = String(r.sku ?? '').trim(), name = String(r.name ?? '').replace(/\\s+/g, ' ').trim(), unit = String(r.unit ?? '').trim() || 'each';\n  const price = Number(r.unit_price);\n  if (!sku || !name || r.unit_price === null || r.unit_price === undefined || r.unit_price === '' || !Number.isFinite(price) || price < 0) continue; // incomplete rows are not offered\n  const label = name + ' (' + sku + ') - ' + cur + ' ' + money(price) + ' / ' + unit;\n  if (!catalog.some((p) => p.label === label)) catalog.push({ sku, name, unit, unit_price: Math.round(price * 100) / 100, label });\n}\nconst prev = $('Check Products').isExecuted ? $('Check Products').last().json : null;\nconst attempt = prev ? prev.attempt + 1 : 1;\nconst lines = Number(s.form_lines);\nconst fields = [];\nfor (let i = 1; i <= lines; i++) {\n  const pick = prev ? String(prev.raw['Product ' + i] ?? '') : '';\n  const qty = prev ? prev.raw['Quantity ' + i] : null;\n  fields.push({ fieldLabel: 'Product ' + i, fieldType: 'dropdown', requiredField: i === 1, fieldOptions: { values: (i === 1 ? [] : ['(none)']).concat(catalog.map((p) => p.label)).map((option) => ({ option })) },\n    ...(catalog.some((p) => p.label === pick) ? { defaultValue: pick } : {}) });\n  fields.push({ fieldLabel: 'Quantity ' + i, fieldType: 'number', requiredField: i === 1, placeholder: 'e.g. 1',\n    ...(Number.isInteger(qty) && qty > 0 ? { defaultValue: String(qty) } : {}) });\n}\nfields.push({ fieldLabel: 'Notes (optional)', fieldType: 'textarea', placeholder: 'Anything we should know', ...(prev && prev.notes ? { defaultValue: prev.notes } : {}) });\nconst intro = 'Hello ' + c.customer_name + ', choose up to ' + lines + ' products and quantities. Prices are per unit, excluding ' + String(s.tax_label).trim() + '.';\nconst page_description = esc((prev ? 'Please fix: ' + prev.problems.join(' ') + ' (try ' + attempt + ' of 3)\\n\\n' : '') + intro);\nreturn [{ json: { product_count: catalog.length, read_error: readError ? String(readError.message ?? readError).slice(0, 300) : '', catalog, attempt, form_fields: JSON.stringify(fields), page_description } }];"
+      }
+    },
+    {
+      "id": "43acb1e7-8a2f-482e-8493-15d5898d6afd",
+      "name": "Products Available?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1960,
+        -120
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "762bbadb-ed48-46cd-b2cc-396d63283b50",
+              "leftValue": "={{ $json.product_count > 0 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "1fc064df-aa8c-411c-8e5c-3f001217b512",
+      "name": "Choose Products",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.3,
+      "position": [
+        2200,
+        -120
+      ],
+      "parameters": {
+        "operation": "page",
+        "defineForm": "json",
+        "jsonOutput": "={{ $json.form_fields }}",
+        "limitWaitTime": true,
+        "limitType": "afterTimeInterval",
+        "resumeAmount": 24,
+        "resumeUnit": "hours",
+        "options": {
+          "formTitle": "Choose products",
+          "formDescription": "={{ $json.page_description }}",
+          "buttonLabel": "Get my quote"
+        }
+      }
+    },
+    {
+      "id": "3c8796f8-f292-46bd-ac0a-0d37c3dca5b4",
+      "name": "Page Submitted?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2420,
+        -120
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "1be4b31c-d934-4ca7-aee0-3196c608ed8f",
+              "leftValue": "={{ $json.form_fields === undefined }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "d721a3f9-1b71-41f7-b55a-ae963481d85d",
+      "name": "Check Products",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "executeOnce": true,
+      "position": [
+        2640,
+        -120
+      ],
+      "parameters": {
+        "jsCode": "// Checks page two against the catalog the customer was shown. Prices are never taken from the form.\nconst esc = (v) => String(v ?? '').replace(/[&<>\"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', \"'\": '&#39;' }[c]));\nconst s = $('Quote Settings').first().json;\nconst page = $('Build Products Page').last().json;\nconst f = $input.first().json;\nconst max = Number(s.max_quantity), lines = Number(s.form_lines);\nconst picked = [], problems = [], raw = {};\nfor (let i = 1; i <= lines; i++) {\n  const label = String(f['Product ' + i] ?? '').trim();\n  const q = f['Quantity ' + i];\n  raw['Product ' + i] = label; raw['Quantity ' + i] = q;\n  const noProduct = !label || label === '(none)';\n  const noQty = q === null || q === undefined || q === '' || q === 0;\n  if (noProduct) { if (!noQty) problems.push('Line ' + i + ': choose a product or clear the quantity.'); continue; }\n  const p = page.catalog.find((x) => x.label === label);\n  if (!p) { problems.push('Line ' + i + ': \"' + label.slice(0, 80) + '\" is not in our price list. Choose from the list.'); continue; }\n  if (noQty) { problems.push('Line ' + i + ': enter a quantity from 1 to ' + max + ' for ' + p.name + '.'); continue; }\n  const qty = Number(q);\n  if (!Number.isInteger(qty) || qty < 1 || qty > max) { problems.push('Line ' + i + ': the quantity for ' + p.name + ' must be a whole number from 1 to ' + max + '.'); continue; }\n  if (picked.some((l) => l.sku === p.sku)) { problems.push('Line ' + i + ': ' + p.name + ' is already on another line.'); continue; }\n  picked.push({ sku: p.sku, name: p.name, unit: p.unit, unit_price: p.unit_price, quantity: qty });\n}\nconst notes = String(f['Notes (optional)'] ?? '').replace(/\\r\\n?/g, '\\n').replace(/[\\u0000-\\u0009\\u000b-\\u001f\\u007f]/g, ' ').trim();\nif (notes.length > 1000) problems.push('Notes are longer than 1000 characters.');\nif (!picked.length && !problems.length) problems.push('Choose at least one product.');\nreturn [{ json: { ok: problems.length === 0, problems, attempt: page.attempt, tries_left: page.attempt < 3, lines: picked, notes, raw,\n  page_message: esc(problems.join('\\n')) + '\\n\\nNothing was sent after 3 tries. Please open the form again.' } }];"
+      }
+    },
+    {
+      "id": "4e5a92d5-2847-4ff9-9463-e834f056031f",
+      "name": "Products OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2860,
+        -120
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "0cf6048b-5a8c-48ce-bc6b-c00fedc4fc62",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "800439d2-41f7-4e6f-82e0-fba64bae240d",
+      "name": "Tries Left?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3080,
+        40
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "1eb61ad7-8404-4f7d-8882-88250e015ed9",
+              "leftValue": "={{ $json.tries_left }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "7dadde81-e912-4a66-97b7-50cf746050c4",
+      "name": "Show Request Not Sent",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.3,
+      "position": [
+        3300,
+        160
+      ],
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "text",
+        "completionTitle": "Request not sent",
+        "completionMessage": "={{ $json.page_message }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "d4a0c8c6-1709-492d-a250-48159ca14b07",
+      "name": "Read Quote Counter",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput",
+      "position": [
+        3540,
+        -120
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Check Setup').first().json.table_ids.counter }}"
+        },
+        "matchType": "anyCondition",
+        "filters": {},
+        "returnAll": true
+      }
+    },
+    {
+      "id": "2aeea002-e2af-47ec-91b6-b8573729c65d",
+      "name": "Prepare Claim",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "executeOnce": true,
+      "position": [
+        3760,
+        -120
+      ],
+      "parameters": {
+        "jsCode": "// Reads the counter row and prepares a compare-and-set claim: the update only matches while last_number is still the value read here.\nconst msg = (e) => String(typeof e === 'string' ? e : e?.message ? e.message + (e.description ? ' (' + e.description + ')' : '') : JSON.stringify(e ?? 'unknown error')).slice(0, 500);\nconst rows = $input.all().map((i) => i.json);\nconst attempt = $runIndex + 1;\nconst err = rows.find((r) => r.error)?.error;\nconst valid = rows.filter((r) => r.id !== undefined).sort((a, b) => a.id - b.id);\nlet out = { attempt, can_claim: false, permanent: false };\nif (err) out.reason = 'Reading the counter table failed: ' + msg(err);\nelse if (!valid.length) out = { ...out, permanent: true, reason: 'The counter table has no row. Execute \"Run Once to Create Tables\" or add a row with last_number 0.' };\nelse {\n  const r = valid[0], seen = Number(r.last_number);\n  if (r.last_number === null || r.last_number === '' || !Number.isInteger(seen) || seen < 0) out = { ...out, permanent: true, reason: 'last_number in counter row ' + r.id + ' must be a whole number of 0 or more.' };\n  else out = { attempt, can_claim: true, permanent: false, counter_id: r.id, seen, next: seen + 1, token: $execution.id + '-' + attempt + '-' + Math.random().toString(36).slice(2, 10) };\n}\nreturn [{ json: out }];"
+      }
+    },
+    {
+      "id": "a10dcc69-d1b5-4e5a-b313-82c411ed44ee",
+      "name": "Counter Ready?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3980,
+        -120
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "84829893-5060-43f1-861b-2b100897a75e",
+              "leftValue": "={{ $json.can_claim }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "a61b42e8-ec17-4279-920d-401a067391d3",
+      "name": "Claim Quote Number",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput",
+      "position": [
+        4200,
+        -120
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Check Setup').first().json.table_ids.counter }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "condition": "eq",
+              "keyValue": "={{ $json.counter_id }}"
+            },
+            {
+              "keyName": "last_number",
+              "condition": "eq",
+              "keyValue": "={{ $json.seen }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "last_number": "={{ $json.next }}",
+            "claim_token": "={{ $json.token }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "last_number",
+              "displayName": "last_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "claim_token",
+              "displayName": "claim_token",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "26a00679-2a1a-4694-9330-52513e39c9bf",
+      "name": "Number Claimed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "executeOnce": true,
+      "position": [
+        4420,
+        -120
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "e922d1de-4af9-40b3-a113-289cf8d360a1",
+              "leftValue": "={{ $json.claim_token === $('Prepare Claim').last().json.token && Number($json.last_number) === $('Prepare Claim').last().json.next }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "a72e1a48-82b9-4a3a-b333-e27491a89b49",
+      "name": "Retry Number?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        4200,
+        120
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "dba6ac80-6606-4a43-a6e1-4e7f3c21cc8a",
+              "leftValue": "={{ !$('Prepare Claim').last().json.permanent && $('Prepare Claim').last().json.attempt < 10 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "ff7a727a-a016-4698-93eb-927b4a7ee145",
+      "name": "Wait Before Retry",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3980,
+        120
+      ],
+      "parameters": {
+        "jsCode": "// Waits 0.1 to 1 second (random, so colliding requests spread out) before reading the counter again.\n// A Code pause is used instead of a Wait node: a Wait node pauses the execution, and a form page requested meanwhile can hang.\nawait new Promise((resolve) => setTimeout(resolve, 100 + Math.floor(Math.random() * 900)));\nreturn $input.all();"
+      }
+    },
+    {
+      "id": "625b943b-e350-47c9-87f3-0520411147a4",
+      "name": "Price the Quote",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4880,
+        -120
+      ],
+      "parameters": {
+        "jsCode": "// Prices every line from the catalog and the settings, in cents to avoid rounding drift. Dates use the workflow timezone.\nconst s = $('Quote Settings').first().json;\nconst c = $('Check Customer Details').first().json;\nconst p = $('Check Products').last().json;\nconst claim = $('Prepare Claim').last().json;\nconst rate = Number(s.tax_rate_percent);\nconst lines = p.lines.map((l) => ({ ...l, amount: Math.round(l.unit_price * 100) * l.quantity / 100 }));\nconst subtotalC = lines.reduce((t, l) => t + Math.round(l.amount * 100), 0);\nconst taxC = Math.round(subtotalC * rate / 100);\nreturn [{ json: {\n  quote_number: String(s.quote_prefix).trim() + String(claim.next).padStart(5, '0'), quote_seq: claim.next,\n  customer_name: c.customer_name, customer_email: c.customer_email, company: c.company, notes: p.notes, lines,\n  currency: String(s.currency).trim(), tax_label: String(s.tax_label).trim(), tax_rate: rate,\n  subtotal: subtotalC / 100, tax: taxC / 100, total: (subtotalC + taxC) / 100,\n  quote_date: $now.toISODate(), valid_until: $now.plus({ days: Number(s.validity_days) }).toISODate(),\n} }];"
+      }
+    },
+    {
+      "id": "0b3a88c3-ef74-4709-bd6f-711c3cc3e077",
+      "name": "Save Quote",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "onError": "continueErrorOutput",
+      "position": [
+        5100,
+        -120
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "insert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Check Setup').first().json.table_ids.quotes }}"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "quote_number": "={{ $json.quote_number }}",
+            "quote_seq": "={{ $json.quote_seq }}",
+            "status": "creating",
+            "customer_name": "={{ $json.customer_name }}",
+            "customer_email": "={{ $json.customer_email }}",
+            "company": "={{ $json.company }}",
+            "notes": "={{ $json.notes }}",
+            "lines": "={{ JSON.stringify($json.lines) }}",
+            "currency": "={{ $json.currency }}",
+            "subtotal": "={{ $json.subtotal }}",
+            "tax": "={{ $json.tax }}",
+            "total": "={{ $json.total }}",
+            "quote_date": "={{ $json.quote_date }}",
+            "valid_until": "={{ $json.valid_until }}",
+            "detail": "Saved; creating the PDF."
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "quote_number",
+              "displayName": "quote_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "quote_seq",
+              "displayName": "quote_seq",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "customer_name",
+              "displayName": "customer_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "customer_email",
+              "displayName": "customer_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "company",
+              "displayName": "company",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "notes",
+              "displayName": "notes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "lines",
+              "displayName": "lines",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "currency",
+              "displayName": "currency",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "subtotal",
+              "displayName": "subtotal",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "tax",
+              "displayName": "tax",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "total",
+              "displayName": "total",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "quote_date",
+              "displayName": "quote_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "valid_until",
+              "displayName": "valid_until",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "detail",
+              "displayName": "detail",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "67a111d1-975b-4193-909c-25063fc7bc27",
+      "name": "Quote Saved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        5320,
+        -120
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a2809494-16a6-4327-9e17-8b49ee9b2a9d",
+              "leftValue": "={{ $json.id !== undefined }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "5a8a9275-36ff-4a47-bd59-617d5e465c99",
+      "name": "Render Quote HTML",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5540,
+        -120
+      ],
+      "parameters": {
+        "jsCode": "// Renders the quote as index.html for Gotenberg. Every value is HTML-escaped, including settings.\nconst esc = (v) => String(v ?? '').replace(/[&<>\"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', \"'\": '&#39;' }[c]));\nconst s = $('Quote Settings').first().json;\nconst q = $('Price the Quote').first().json;\nconst money = (v) => q.currency + ' ' + Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });\nconst rows = q.lines.map((l, i) => '<tr><td>' + (i + 1) + '</td><td>' + esc(l.name) + '<div class=\"sku\">' + esc(l.sku) + '</div></td><td class=\"r\">' + l.quantity + ' ' + esc(l.unit) + '</td><td class=\"r\">' + esc(money(l.unit_price)) + '</td><td class=\"r\">' + esc(money(l.amount)) + '</td></tr>').join('');\nconst html = '<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>' + esc(q.quote_number) + '</title><style>'\n  + 'body{font-family:Helvetica,Arial,sans-serif;color:#222;font-size:12px}h1{font-size:26px;margin:0;color:#1f3a5f}.top{display:flex;justify-content:space-between;margin-bottom:28px}'\n  + '.muted{color:#666;white-space:pre-line}table{width:100%;border-collapse:collapse;margin-top:18px}th{background:#1f3a5f;color:#fff;text-align:left;padding:8px}'\n  + 'td{padding:8px;border-bottom:1px solid #ddd;vertical-align:top}.r{text-align:right}.sku{color:#888;font-size:10px}.tot td{border:none}.grand td{font-weight:bold;font-size:14px;border-top:2px solid #1f3a5f}'\n  + '.box{margin-top:22px;padding:10px;background:#f4f6f9;white-space:pre-line}</style></head><body>'\n  + '<div class=\"top\"><div><h1>' + esc(s.business_name) + '</h1><div class=\"muted\">' + esc(s.business_details) + '</div></div>'\n  + '<div class=\"r\"><h1>Quote</h1><div>' + esc(q.quote_number) + '</div><div>Date: ' + esc(q.quote_date) + '</div><div>Valid until: ' + esc(q.valid_until) + '</div></div></div>'\n  + '<div><b>For</b><br>' + esc(q.customer_name) + '<br>' + esc(q.company) + '<br>' + esc(q.customer_email) + '</div>'\n  + '<table><tr><th>#</th><th>Product</th><th class=\"r\">Quantity</th><th class=\"r\">Unit price</th><th class=\"r\">Amount</th></tr>' + rows\n  + '<tr class=\"tot\"><td colspan=\"4\" class=\"r\">Subtotal</td><td class=\"r\">' + esc(money(q.subtotal)) + '</td></tr>'\n  + '<tr class=\"tot\"><td colspan=\"4\" class=\"r\">' + esc(q.tax_label) + ' ' + q.tax_rate + '%</td><td class=\"r\">' + esc(money(q.tax)) + '</td></tr>'\n  + '<tr class=\"grand\"><td colspan=\"4\" class=\"r\">Total</td><td class=\"r\">' + esc(money(q.total)) + '</td></tr></table>'\n  + (q.notes ? '<div class=\"box\"><b>Your notes</b>\\n' + esc(q.notes) + '</div>' : '')\n  + '<div class=\"box\">' + esc(s.quote_terms) + '\\nThis quote is valid until ' + esc(q.valid_until) + '.</div></body></html>';\nreturn [{ json: { quote_number: q.quote_number }, binary: { data: { data: Buffer.from(html, 'utf8').toString('base64'), mimeType: 'text/html', fileName: 'index.html', fileExtension: 'html' } } }];"
+      }
+    },
+    {
+      "id": "a655c737-454f-47d9-a268-76377c836213",
+      "name": "Create PDF with Gotenberg",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "onError": "continueErrorOutput",
+      "position": [
+        5760,
+        -120
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Quote Settings').first().json.gotenberg_url.trim().replace(/\\/+$/, '') }}/forms/chromium/convert/html",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Gotenberg-Output-Filename",
+              "value": "={{ $json.quote_number }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "files",
+              "inputDataFieldName": "data"
+            },
+            {
+              "name": "paperWidth",
+              "value": "={{ $('Quote Settings').first().json.paper_size.trim().toLowerCase() === 'letter' ? '8.5' : '8.27' }}"
+            },
+            {
+              "name": "paperHeight",
+              "value": "={{ $('Quote Settings').first().json.paper_size.trim().toLowerCase() === 'letter' ? '11' : '11.7' }}"
+            },
+            {
+              "name": "marginTop",
+              "value": "={{ $('Quote Settings').first().json.pdf_margin.trim() }}"
+            },
+            {
+              "name": "marginBottom",
+              "value": "={{ $('Quote Settings').first().json.pdf_margin.trim() }}"
+            },
+            {
+              "name": "marginLeft",
+              "value": "={{ $('Quote Settings').first().json.pdf_margin.trim() }}"
+            },
+            {
+              "name": "marginRight",
+              "value": "={{ $('Quote Settings').first().json.pdf_margin.trim() }}"
+            },
+            {
+              "name": "printBackground",
+              "value": "true"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "data"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "6d2a995e-6b34-4700-84ae-ce34e965433a",
+      "name": "Is It a PDF?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        5980,
+        -120
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "ca005c2f-c2c2-4cec-b5d6-9d92f364cb67",
+              "leftValue": "={{ $binary.data !== undefined && $binary.data.mimeType === 'application/pdf' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "bc68d3ea-be8f-4d6d-954c-900068ae752b",
+      "name": "Email Quote to Customer",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "onError": "continueErrorOutput",
+      "position": [
+        6200,
+        -120
+      ],
+      "parameters": {
+        "fromEmail": "={{ $('Quote Settings').first().json.from_email.trim() }}",
+        "toEmail": "={{ $('Price the Quote').first().json.customer_email }}",
+        "subject": "=Quote {{ $('Price the Quote').first().json.quote_number }} from {{ $('Quote Settings').first().json.business_name.trim() }}",
+        "emailFormat": "html",
+        "html": "={{ (() => { const q = $('Price the Quote').first().json; const e = (v) => String(v ?? '').replace(/[&<>\"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', \"'\": '&#39;' }[c])); return '<p>Hello ' + e(q.customer_name) + ',</p><p>Thank you for your request. Your quote ' + e(q.quote_number) + ' is attached as a PDF.</p><p>Total: ' + e(q.currency) + ' ' + q.total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' including ' + e(q.tax_label) + '. Valid until ' + e(q.valid_until) + '.</p><p>Reply to this email to accept it or to ask a question.</p><p>' + e($('Quote Settings').first().json.business_name) + '</p>'; })() }}",
+        "options": {
+          "appendAttribution": false,
+          "attachments": "data",
+          "bccEmail": "={{ $('Quote Settings').first().json.owner_email.trim() }}",
+          "replyTo": "={{ $('Quote Settings').first().json.owner_email.trim() }}"
+        }
+      },
+      "credentials": {
+        "smtp": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "a1dabbae-d8e8-4422-8909-e76661b946a6",
+      "name": "Record Outcome",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6420,
+        60
+      ],
+      "parameters": {
+        "jsCode": "// Decides the quote status from what happened to the PDF and the email, and writes the customer's result page.\nconst esc = (v) => String(v ?? '').replace(/[&<>\"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', \"'\": '&#39;' }[c]));\nconst msg = (e) => String(typeof e === 'string' ? e : e?.message ? e.message + (e.description ? ' (' + e.description + ')' : '') : JSON.stringify(e ?? 'unknown error')).slice(0, 500);\nconst s = $('Quote Settings').first().json;\nconst q = $('Price the Quote').first().json;\nconst it = $input.first();\nconst owner = String(s.owner_email).trim().toLowerCase();\nlet status = 'failed', detail, stage = 'pdf';\nif ($('Email Quote to Customer').isExecuted) {\n  stage = 'email';\n  if (it.json.error) detail = 'The quote email could not be sent: ' + msg(it.json.error);\n  else {\n    const rejected = (it.json.rejected || []).map((x) => String(x).toLowerCase());\n    if (rejected.includes(q.customer_email)) detail = 'The mail server rejected the customer address ' + q.customer_email + (rejected.includes(owner) ? '.' : '; the blind copy to ' + owner + ' was accepted.');\n    else { status = 'sent'; detail = 'Emailed to ' + q.customer_email + (rejected.includes(owner) ? '; the copy to ' + owner + ' was rejected.' : ' with a copy to ' + owner + '.'); }\n  }\n} else if (it.json.error) detail = 'Gotenberg could not create the PDF: ' + msg(it.json.error);\nelse detail = 'Gotenberg answered without a PDF (content type ' + (it.binary?.data?.mimeType || 'none') + '). Check gotenberg_url.';\nconst total = q.currency + ' ' + Number(q.total).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });\nconst page = status === 'sent'\n  ? { page_title: 'Your quote is on its way', page_message: 'Thank you, ' + esc(q.customer_name) + '. Quote ' + esc(q.quote_number) + ' (total ' + esc(total) + ', valid until ' + esc(q.valid_until) + ') has been emailed to ' + esc(q.customer_email) + '.' }\n  : stage === 'pdf'\n    ? { page_title: 'Quote registered, PDF delayed', page_message: 'Thank you, ' + esc(q.customer_name) + '. Your request is saved as quote ' + esc(q.quote_number) + ', but the PDF could not be created right now. We have been told and will email it to ' + esc(q.customer_email) + ' as soon as possible.' }\n    : { page_title: 'Quote created, email not sent', page_message: 'Thank you, ' + esc(q.customer_name) + '. Quote ' + esc(q.quote_number) + ' was created, but we could not email it to ' + esc(q.customer_email) + '. We have been told and will send it to you as soon as possible.' };\nreturn [{ json: { status, detail, stage, ...page } }];"
+      }
+    },
+    {
+      "id": "93bbafb2-c898-4626-b188-d86e4014bc8b",
+      "name": "Update Quote Status",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput",
+      "position": [
+        6640,
+        60
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Check Setup').first().json.table_ids.quotes }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "condition": "eq",
+              "keyValue": "={{ $('Save Quote').first().json.id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "status": "={{ $json.status }}",
+            "detail": "={{ $json.detail }}",
+            "finished_at": "={{ $now.toUTC().toISO() }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "detail",
+              "displayName": "detail",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "finished_at",
+              "displayName": "finished_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "d88c6a16-45ce-46b7-b6f4-6dd48043a617",
+      "name": "Quote Sent and Saved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "executeOnce": true,
+      "position": [
+        6860,
+        60
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "5614f1da-bb68-4bda-94f8-e19494048e9f",
+              "leftValue": "={{ $json.id !== undefined && $json.error === undefined && $('Record Outcome').first().json.status === 'sent' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "ad8125d8-98b8-42e8-ba27-95070572d207",
+      "name": "Show Quote Sent",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.3,
+      "position": [
+        7080,
+        -120
+      ],
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "text",
+        "completionTitle": "={{ $('Record Outcome').first().json.page_title }}",
+        "completionMessage": "={{ $('Record Outcome').first().json.page_message }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "aa3ec554-5f19-4c49-a280-74000c54e1b6",
+      "name": "Prepare Owner Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4880,
+        480
+      ],
+      "parameters": {
+        "jsCode": "// One alert email for every failure, and the honest page the customer sees.\nconst esc = (v) => String(v ?? '').replace(/[&<>\"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', \"'\": '&#39;' }[c]));\nconst msg = (e) => String(typeof e === 'string' ? e : e?.message ? e.message + (e.description ? ' (' + e.description + ')' : '') : JSON.stringify(e ?? 'unknown error')).slice(0, 500);\nconst s = $('Quote Settings').first().json;\nconst ran = (name) => $(name).isExecuted;\nconst c = ran('Check Customer Details') ? $('Check Customer Details').first().json : {};\nconst it = $input.first().json;\nconst unavailable = { page_title: 'Quotes are unavailable right now', page_message: 'Online quotes cannot be created at the moment. We have been told about it. Please try again later.' };\nconst notCreated = { page_title: 'We could not create your quote', page_message: 'Thank you, ' + esc(c.customer_name) + '. Something went wrong on our side and no quote was created. We have been told about it and will contact you at ' + esc(c.customer_email) + '.' };\nlet subject, problem, quote = null, page, page_expired = false;\nif (it.form_fields !== undefined && it.product_count > 0) {\n  // Page two (Choose Products) reached its time limit without being submitted. Nobody is waiting for a result page.\n  page_expired = true;\n  problem = 'Page 2 (products) was not submitted within its time limit (24 hours as shipped), so no quote was created. Contact the customer if you want to follow up.';\n  subject = 'Quote request from ' + c.customer_email + ' not finished: page 2 not submitted';\n  page = { page_title: 'nothing (page 2 expired; a late submit only shows n8n\\'s own \"Your response has been recorded\")', page_message: '' };\n} else if (ran('Record Outcome')) {\n  const o = $('Record Outcome').first().json;\n  quote = $('Price the Quote').first().json;\n  const saved = it.id !== undefined && !it.error;\n  const parts = [];\n  if (o.status !== 'sent') parts.push(o.detail);\n  if (!saved) parts.push('The quote row could not be set to \"' + o.status + '\": ' + (it.error ? msg(it.error) : 'the data table returned no updated row (was the row deleted or a column removed?)') + '.');\n  problem = parts.join(' ');\n  subject = o.status === 'sent' ? 'Quote ' + quote.quote_number + ' sent, but its status was not saved' : 'Quote ' + quote.quote_number + ' NOT sent to ' + quote.customer_email;\n  page = { page_title: o.page_title, page_message: o.page_message };\n} else if (ran('Save Quote')) {\n  quote = $('Price the Quote').first().json;\n  problem = 'Quote number ' + quote.quote_number + ' was claimed, but the quote could not be saved: ' + (it.error ? msg(it.error) : 'the data table returned no saved row (was a column removed?).') + ' No PDF or email was sent; the number stays unused.';\n  subject = 'Quote request from ' + c.customer_email + ' could not be saved';\n  page = notCreated;\n} else if (ran('Prepare Claim')) {\n  const p = $('Prepare Claim').last().json;\n  const claimErr = ran('Claim Quote Number') ? $('Claim Quote Number').last().json.error : null;\n  problem = 'No quote number could be claimed after ' + p.attempt + ' tries. ' + (p.reason || (claimErr ? 'Last error: ' + msg(claimErr) : 'The counter row never matched: other requests kept changing it, or a counter column (last_number, claim_token) is missing.'));\n  subject = 'Quote request from ' + c.customer_email + ' got no quote number';\n  page = notCreated;\n} else if (ran('Build Products Page')) {\n  const b = $('Build Products Page').last().json;\n  problem = b.read_error ? 'Reading the catalog table failed: ' + b.read_error : 'The catalog has no active product with a sku, name and unit_price, so the form cannot offer anything.';\n  subject = b.read_error ? 'Quote form unavailable: catalog not readable' : 'Quote form unavailable: no products';\n  page = unavailable;\n} else {\n  problem = $('Check Setup').first().json.problems.join(' ');\n  subject = 'Quote form unavailable: setup problem';\n  page = unavailable;\n}\nconst row = (k, v) => '<tr><td><b>' + esc(k) + '</b></td><td>' + esc(v) + '</td></tr>';\nconst lines = page_expired ? '' : quote ? quote.lines.map((l) => l.quantity + ' x ' + l.name + ' (' + l.sku + ')').join('; ') : ($('Check Products').isExecuted ? $('Check Products').last().json.lines.map((l) => l.quantity + ' x ' + l.name).join('; ') : '');\nconst html = '<p>' + esc(problem) + '</p><table border=\"1\" cellpadding=\"4\" cellspacing=\"0\">'\n  + (c.customer_email ? row('Customer', c.customer_name + ', ' + c.company + ' <' + c.customer_email + '>') : '')\n  + (quote ? row('Quote', quote.quote_number + ', ' + quote.currency + ' ' + quote.total.toFixed(2) + ', valid until ' + quote.valid_until) : '')\n  + (lines ? row('Lines', lines) : '')\n  + row('Customer was shown', page.page_title)\n  + row('Execution', $execution.id) + '</table>';\nreturn [{ json: { subject, problem, html, page_expired, ...page } }];"
+      }
+    },
+    {
+      "id": "5d2bc784-78bb-450c-aed0-9f22f518b5bc",
+      "name": "Send Owner Alert",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "onError": "continueErrorOutput",
+      "position": [
+        5100,
+        480
+      ],
+      "parameters": {
+        "fromEmail": "={{ $('Quote Settings').first().json.from_email.trim() }}",
+        "toEmail": "={{ $('Quote Settings').first().json.owner_email.trim() }}",
+        "subject": "={{ $json.subject }}",
+        "emailFormat": "html",
+        "html": "={{ $json.html }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "smtp": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "b2527564-6d63-4b9d-8349-a9ef07f73a56",
+      "name": "Page Expired?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        5320,
+        480
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "2a965876-ddfc-44eb-b5b0-70f83cfd5696",
+              "leftValue": "={{ $('Prepare Owner Alert').first().json.page_expired }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "0863e80e-f422-4b3d-ac03-11054b2b2725",
+      "name": "Show Result Page",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.3,
+      "position": [
+        5540,
+        560
+      ],
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "text",
+        "completionTitle": "={{ $('Prepare Owner Alert').first().json.page_title }}",
+        "completionMessage": "={{ $('Prepare Owner Alert').first().json.page_message }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "cf14586c-1d94-46c8-84b4-ec4d54322b4a",
+      "name": "Alert Failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        5760,
+        480
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "4822bcaa-50c5-4479-be0f-96c7460da5bd",
+              "leftValue": "={{ $json.error !== undefined }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "657883dc-e409-4e0d-a276-31ea1f031dcc",
+      "name": "Stop: Owner Alert Failed",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        5980,
+        460
+      ],
+      "parameters": {
+        "errorMessage": "={{ 'The owner alert email could not be sent (' + String($json.error?.message ?? $json.error).slice(0, 300) + '). Problem it reported: ' + $('Prepare Owner Alert').first().json.problem }}"
+      }
+    }
+  ],
+  "connections": {
+    "Run Once to Create Tables": {
+      "main": [
+        [
+          {
+            "node": "Quote Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Quote Request Form": {
+      "main": [
+        [
+          {
+            "node": "Quote Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Quote Settings": {
+      "main": [
+        [
+          {
+            "node": "Setup Run?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Setup Run?": {
+      "main": [
+        [
+          {
+            "node": "Create Products Table",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Check Customer Details",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Products Table": {
+      "main": [
+        [
+          {
+            "node": "Create Quotes Table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Quotes Table": {
+      "main": [
+        [
+          {
+            "node": "Create Counter Table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Counter Table": {
+      "main": [
+        [
+          {
+            "node": "Check Counter Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Counter Row": {
+      "main": [
+        [
+          {
+            "node": "Counter Row Missing?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Counter Row Missing?": {
+      "main": [
+        [
+          {
+            "node": "Add Counter Row",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Check Products Empty",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add Counter Row": {
+      "main": [
+        [
+          {
+            "node": "Check Products Empty",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Products Empty": {
+      "main": [
+        [
+          {
+            "node": "Products Table Empty?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Products Table Empty?": {
+      "main": [
+        [
+          {
+            "node": "Example Products",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Example Products": {
+      "main": [
+        [
+          {
+            "node": "Add Example Products",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Customer Details": {
+      "main": [
+        [
+          {
+            "node": "Details OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Details OK?": {
+      "main": [
+        [
+          {
+            "node": "Find Data Tables",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Show Details Problem",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Data Tables": {
+      "main": [
+        [
+          {
+            "node": "Check Setup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Setup": {
+      "main": [
+        [
+          {
+            "node": "Setup OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Setup OK?": {
+      "main": [
+        [
+          {
+            "node": "Load Product Catalog",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Owner Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Product Catalog": {
+      "main": [
+        [
+          {
+            "node": "Build Products Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Products Page": {
+      "main": [
+        [
+          {
+            "node": "Products Available?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Products Available?": {
+      "main": [
+        [
+          {
+            "node": "Choose Products",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Owner Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Choose Products": {
+      "main": [
+        [
+          {
+            "node": "Page Submitted?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Page Submitted?": {
+      "main": [
+        [
+          {
+            "node": "Check Products",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Owner Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Products": {
+      "main": [
+        [
+          {
+            "node": "Products OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Products OK?": {
+      "main": [
+        [
+          {
+            "node": "Read Quote Counter",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Tries Left?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tries Left?": {
+      "main": [
+        [
+          {
+            "node": "Load Product Catalog",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Show Request Not Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Quote Counter": {
+      "main": [
+        [
+          {
+            "node": "Prepare Claim",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Claim": {
+      "main": [
+        [
+          {
+            "node": "Counter Ready?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Counter Ready?": {
+      "main": [
+        [
+          {
+            "node": "Claim Quote Number",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Retry Number?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Quote Number": {
+      "main": [
+        [
+          {
+            "node": "Number Claimed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Number Claimed?": {
+      "main": [
+        [
+          {
+            "node": "Price the Quote",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Retry Number?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retry Number?": {
+      "main": [
+        [
+          {
+            "node": "Wait Before Retry",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Owner Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait Before Retry": {
+      "main": [
+        [
+          {
+            "node": "Read Quote Counter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Price the Quote": {
+      "main": [
+        [
+          {
+            "node": "Save Quote",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Quote": {
+      "main": [
+        [
+          {
+            "node": "Quote Saved?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Owner Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Quote Saved?": {
+      "main": [
+        [
+          {
+            "node": "Render Quote HTML",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Owner Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Render Quote HTML": {
+      "main": [
+        [
+          {
+            "node": "Create PDF with Gotenberg",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create PDF with Gotenberg": {
+      "main": [
+        [
+          {
+            "node": "Is It a PDF?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is It a PDF?": {
+      "main": [
+        [
+          {
+            "node": "Email Quote to Customer",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Quote to Customer": {
+      "main": [
+        [
+          {
+            "node": "Record Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Outcome": {
+      "main": [
+        [
+          {
+            "node": "Update Quote Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Quote Status": {
+      "main": [
+        [
+          {
+            "node": "Quote Sent and Saved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Quote Sent and Saved?": {
+      "main": [
+        [
+          {
+            "node": "Show Quote Sent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Owner Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Owner Alert": {
+      "main": [
+        [
+          {
+            "node": "Send Owner Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Owner Alert": {
+      "main": [
+        [
+          {
+            "node": "Page Expired?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Page Expired?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Page Expired?": {
+      "main": [
+        [
+          {
+            "node": "Alert Failed?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Show Result Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Show Result Page": {
+      "main": [
+        [
+          {
+            "node": "Alert Failed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert Failed?": {
+      "main": [
+        [
+          {
+            "node": "Stop: Owner Alert Failed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {}
+}

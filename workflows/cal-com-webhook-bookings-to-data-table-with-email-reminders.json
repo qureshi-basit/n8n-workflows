@@ -1,0 +1,2132 @@
+{
+  "name": "Cal.com Webhook Bookings to Data Table with Email Reminders",
+  "nodes": [
+    {
+      "id": "k1-1",
+      "name": "Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -760,
+        -440
+      ],
+      "parameters": {
+        "content": "### How it works\nThe Cal.com Trigger can stop firing since Cal.com retired API v1, so this uses a plain Webhook:\n1. **Receive Cal.com Webhook** gets Booking Created, Rescheduled and Cancelled deliveries and checks the `x-cal-signature-256` HMAC over the raw body.\n2. Each booking is one Data Table row keyed by `uid`. A reschedule marks the old row `rescheduled` and stores the new one; a cancel marks it `cancelled`; repeats are skipped.\n3. Every 5 minutes, booked rows get a first and second reminder email in the attendee's time zone.\n\n### Setup\nNeeds n8n Data Tables; tested on n8n 2.48.7.\n1. Add an SMTP credential to **Send Reminder Email**.\n2. In **Booking Settings** set `webhook_secret` (a long random text), `from_email` (a sender your SMTP server accepts), `bookings_table_name`, `first_reminder_hours` and `second_reminder_hours` (keep second smaller).\n3. Execute **Run Once to Create Bookings Table** (needs Data Table create permission).\n4. Publish (Activate on older versions), copy the Production URL of **Receive Cal.com Webhook**.\n5. In Cal.com, Settings > Developer > Webhooks: new webhook with that URL, the same secret, Payload Template left empty, triggers Booking Created, Rescheduled and Cancelled.\n\n### Customization\nEdit the email text in **Pick Due Reminders**. Reminders go to the booker; guests are kept in `guest_emails`.\n\nLimits: Cal.com does not retry deliveries. A failed save answers 500 and fails the run; check it in Cal.com and fix the row by hand. Seated event types are not supported. Simultaneous copies of a booking may both be stored; only the oldest gets reminders. A reminder is skipped when booked inside its window, or when sending and releasing both fail. Invalid attendee time zones fall back to the workflow timezone.",
+        "width": 660,
+        "height": 1460
+      }
+    },
+    {
+      "id": "k1-2",
+      "name": "Setup Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -60,
+        -440
+      ],
+      "parameters": {
+        "content": "## One-time setup\nCreates the bookings Data Table with its 17 columns (skipped if it exists).",
+        "width": 920,
+        "height": 300,
+        "color": 7
+      }
+    },
+    {
+      "id": "k1-3",
+      "name": "Verify Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -60,
+        -100
+      ],
+      "parameters": {
+        "content": "## Verify the delivery\nHMAC of the raw body. Wrong or missing signature, an unsigned empty body too: 401. Signed but not a booking delivery: 400. Not JSON: n8n answers 422. Empty `webhook_secret`: 500 and a failed run. Seated or other events: 200, ignored.",
+        "width": 2220,
+        "height": 480,
+        "color": 7
+      }
+    },
+    {
+      "id": "k1-4",
+      "name": "Table Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2200,
+        -100
+      ],
+      "parameters": {
+        "content": "## Find the bookings table\nExact name match. If it is missing, Cal.com gets 503 and the run fails, so it shows in Executions.",
+        "width": 900,
+        "height": 620,
+        "color": 7
+      }
+    },
+    {
+      "id": "k1-5",
+      "name": "Store Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        3140,
+        -140
+      ],
+      "parameters": {
+        "content": "## Store the booking\nOne row per `uid`. Rescheduled marks the old row first; cancelled marks the booked row. A booking already stored is skipped. A failed read or write answers 500 and fails the run.",
+        "width": 2480,
+        "height": 580,
+        "color": 7
+      }
+    },
+    {
+      "id": "k1-6",
+      "name": "Reminder Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -60,
+        580
+      ],
+      "parameters": {
+        "content": "## Send reminders\nEvery 5 minutes. Each reminder is claimed in the row before sending, so it goes out once. If the claim or the email fails, the next run tries again (until the meeting starts).",
+        "width": 4620,
+        "height": 440,
+        "color": 7
+      }
+    },
+    {
+      "id": "k1-7",
+      "name": "Run Once to Create Bookings Table",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -300
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "k1-8",
+      "name": "Receive Cal.com Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        40
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "calcom-bookings",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      }
+    },
+    {
+      "id": "k1-9",
+      "name": "Check Reminders Every 5 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        720
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "k1-10",
+      "name": "Booking Settings",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        220,
+        40
+      ],
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "k1s1",
+              "name": "bookings_table_name",
+              "type": "string",
+              "value": "calcom_bookings"
+            },
+            {
+              "id": "k1s2",
+              "name": "webhook_secret",
+              "type": "string",
+              "value": ""
+            },
+            {
+              "id": "k1s3",
+              "name": "from_email",
+              "type": "string",
+              "value": "bookings@example.com"
+            },
+            {
+              "id": "k1s4",
+              "name": "first_reminder_hours",
+              "type": "number",
+              "value": 24
+            },
+            {
+              "id": "k1s5",
+              "name": "second_reminder_hours",
+              "type": "number",
+              "value": 1
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "include": "selected",
+        "includeFields": "",
+        "options": {
+          "stripBinary": false
+        }
+      }
+    },
+    {
+      "id": "k1-11",
+      "name": "Setup Run?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        440,
+        40
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "k1-12",
+              "leftValue": "={{ $('Run Once to Create Bookings Table').isExecuted }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "k1-13",
+      "name": "Create Bookings Table",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        660,
+        -300
+      ],
+      "parameters": {
+        "resource": "table",
+        "operation": "create",
+        "tableName": "={{ $('Booking Settings').first().json.bookings_table_name.trim() }}",
+        "columns": {
+          "column": [
+            {
+              "name": "uid",
+              "type": "string"
+            },
+            {
+              "name": "status",
+              "type": "string"
+            },
+            {
+              "name": "title",
+              "type": "string"
+            },
+            {
+              "name": "start_at",
+              "type": "date"
+            },
+            {
+              "name": "end_at",
+              "type": "date"
+            },
+            {
+              "name": "attendee_name",
+              "type": "string"
+            },
+            {
+              "name": "attendee_email",
+              "type": "string"
+            },
+            {
+              "name": "attendee_time_zone",
+              "type": "string"
+            },
+            {
+              "name": "guest_emails",
+              "type": "string"
+            },
+            {
+              "name": "organizer_email",
+              "type": "string"
+            },
+            {
+              "name": "meeting_url",
+              "type": "string"
+            },
+            {
+              "name": "rescheduled_from",
+              "type": "string"
+            },
+            {
+              "name": "rescheduled_to",
+              "type": "string"
+            },
+            {
+              "name": "cancellation_reason",
+              "type": "string"
+            },
+            {
+              "name": "booked_at",
+              "type": "date"
+            },
+            {
+              "name": "reminders_sent",
+              "type": "number"
+            },
+            {
+              "name": "last_error",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {
+          "createIfNotExists": true
+        }
+      }
+    },
+    {
+      "id": "k1-14",
+      "name": "From Webhook?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        660,
+        40
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "k1-15",
+              "leftValue": "={{ $('Receive Cal.com Webhook').isExecuted }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "k1-16",
+      "name": "Sign Raw Body",
+      "type": "n8n-nodes-base.crypto",
+      "typeVersion": 1,
+      "position": [
+        880,
+        40
+      ],
+      "parameters": {
+        "action": "hmac",
+        "binaryData": true,
+        "binaryPropertyName": "data",
+        "type": "SHA256",
+        "dataPropertyName": "expected_signature",
+        "secret": "={{ String($('Booking Settings').first().json.webhook_secret ?? '').trim() }}",
+        "encoding": "hex"
+      }
+    },
+    {
+      "id": "k1-17",
+      "name": "Check Delivery",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        40
+      ],
+      "parameters": {
+        "jsCode": "// Checks the Cal.com signature (HMAC-SHA256 of the raw body, hex, header x-cal-signature-256)\n// and turns the delivery into one booking record. Every other request is answered here.\nconst s = $('Booking Settings').first().json;\nconst req = $('Receive Cal.com Webhook').first().json;\nconst stop = (status, error) => [{ json: { accepted: false, status, response: { ok: false, error } } }];\nconst secret = String(s.webhook_secret ?? '').trim();\nif (!secret) return stop(500, 'webhook_secret is empty in Booking Settings.');\nconst expected = String($('Sign Raw Body').first().json.expected_signature || '');\nconst got = String(req.headers['x-cal-signature-256'] ?? '').trim().toLowerCase();\nlet diff = got.length ^ expected.length;\nfor (let i = 0; i < expected.length; i++) diff |= expected.charCodeAt(i) ^ (got.charCodeAt(i) || 0);\nif (!expected || diff !== 0) return stop(401, 'Missing or invalid x-cal-signature-256 signature.');\n\nconst b = req.body;\nif (!b || typeof b !== 'object' || Array.isArray(b) || typeof b.triggerEvent !== 'string') return stop(400, 'Body is not a Cal.com webhook delivery.');\nconst actions = { BOOKING_CREATED: 'created', BOOKING_RESCHEDULED: 'rescheduled', BOOKING_CANCELLED: 'cancelled' };\nconst action = actions[b.triggerEvent];\nif (!action) return [{ json: { accepted: false, status: 200, response: { ok: true, ignored: 'Event ' + b.triggerEvent.slice(0, 60) + ' is not handled.' } } }];\nconst p = b.payload && typeof b.payload === 'object' ? b.payload : {};\nconst str = (v) => (typeof v === 'string' ? v.trim() : '');\nconst uid = str(p.uid);\nif (!uid) return stop(400, 'payload.uid is missing.');\n// Seated event types: every seat shares the booking uid and attendees[0] is not the new seat, so they are not stored.\nif (str(p.attendeeSeatId) || Number(p.seatsPerTimeSlot) > 0) return [{ json: { accepted: false, status: 200, response: { ok: true, ignored: 'Seated event types are not supported; booking ' + uid.slice(0, 60) + ' was not stored.' } } }];\nconst iso = (v) => { const t = Date.parse(str(v)); return Number.isFinite(t) ? new Date(t).toISOString() : ''; };\nconst start = iso(p.startTime);\nconst attendees = Array.isArray(p.attendees) ? p.attendees.filter((a) => a && typeof a === 'object') : [];\nconst main = attendees[0] || {};\nconst email = str(main.email).toLowerCase();\nif (action !== 'cancelled') {\n  if (!start) return stop(400, 'payload.startTime is missing or not a date.');\n  if (!email) return stop(400, 'payload.attendees[0].email is missing.');\n  if (action === 'rescheduled' && !str(p.rescheduleUid)) return stop(400, 'payload.rescheduleUid is missing.');\n}\nconst meeting = str(p.metadata && p.metadata.videoCallUrl) || (/^https:\\/\\//.test(str(p.location)) ? str(p.location) : '');\nreturn [{ json: { accepted: true, action, booking: {\n  uid,\n  title: str(p.title).slice(0, 300),\n  start_at: start,\n  end_at: iso(p.endTime) || start,\n  attendee_name: str(main.name).slice(0, 200),\n  attendee_email: email,\n  attendee_time_zone: str(main.timeZone),\n  guest_emails: attendees.slice(1).map((a) => str(a.email).toLowerCase()).filter(Boolean).join(', '),\n  organizer_email: str(p.organizer && p.organizer.email).toLowerCase(),\n  meeting_url: meeting,\n  rescheduled_from: action === 'rescheduled' ? str(p.rescheduleUid) : '',\n  cancellation_reason: str(p.cancellationReason).slice(0, 500),\n  booked_at: iso(b.createdAt) || new Date().toISOString(),\n} } }];"
+      }
+    },
+    {
+      "id": "k1-18",
+      "name": "Delivery Accepted?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1320,
+        40
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "k1-19",
+              "leftValue": "={{ $json.accepted }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "k1-20",
+      "name": "Answer Rejected or Ignored",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1540,
+        220
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json.response) }}",
+        "options": {
+          "responseCode": "={{ $json.status }}"
+        }
+      }
+    },
+    {
+      "id": "k1-21",
+      "name": "Secret Missing?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1760,
+        220
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "k1-22",
+              "leftValue": "={{ $('Check Delivery').first().json.status === 500 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "k1-23",
+      "name": "Fail Run: Secret Missing",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        1980,
+        200
+      ],
+      "parameters": {
+        "errorType": "errorMessage",
+        "errorMessage": "webhook_secret is empty in Booking Settings, so every Cal.com delivery is refused (500). Set it and use the same secret in Cal.com."
+      }
+    },
+    {
+      "id": "k1-24",
+      "name": "Find Bookings Table",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "position": [
+        2260,
+        40
+      ],
+      "parameters": {
+        "resource": "table",
+        "operation": "list",
+        "returnAll": true,
+        "options": {
+          "filterName": "={{ $('Booking Settings').first().json.bookings_table_name.trim() }}"
+        }
+      }
+    },
+    {
+      "id": "k1-25",
+      "name": "Bookings Table Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "executeOnce": true,
+      "position": [
+        2480,
+        40
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "k1-26",
+              "leftValue": "={{ $('Find Bookings Table').all().some((t) => t.json.name === $('Booking Settings').first().json.bookings_table_name.trim()) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "k1-27",
+      "name": "Webhook Delivery?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2700,
+        40
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "k1-28",
+              "leftValue": "={{ $('Receive Cal.com Webhook').isExecuted }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "k1-29",
+      "name": "Caller Waiting?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2480,
+        260
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "k1-30",
+              "leftValue": "={{ $('Receive Cal.com Webhook').isExecuted }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "k1-31",
+      "name": "Report Missing Table",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        2700,
+        240
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: false, error: 'The bookings data table \"' + $('Booking Settings').first().json.bookings_table_name.trim() + '\" does not exist. Run the one-time setup.' }) }}",
+        "options": {
+          "responseCode": 503
+        }
+      }
+    },
+    {
+      "id": "k1-32",
+      "name": "Fail Run: Table Missing",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        2920,
+        340
+      ],
+      "parameters": {
+        "errorType": "errorMessage",
+        "errorMessage": "={{ 'The bookings data table \"' + $('Booking Settings').first().json.bookings_table_name.trim() + '\" does not exist. Run the one-time setup.' }}"
+      }
+    },
+    {
+      "id": "k1-33",
+      "name": "Cancellation?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3200,
+        40
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "k1-34",
+              "leftValue": "={{ $('Check Delivery').first().json.action === 'cancelled' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "k1-35",
+      "name": "Reschedule?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3420,
+        -20
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "k1-36",
+              "leftValue": "={{ $('Check Delivery').first().json.action === 'rescheduled' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "k1-37",
+      "name": "Mark Old Booking Rescheduled",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "onError": "continueErrorOutput",
+      "position": [
+        3640,
+        -40
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Bookings Table').all().find((t) => t.json.name === $('Booking Settings').first().json.bookings_table_name.trim()).json.id }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "uid",
+              "condition": "eq",
+              "keyValue": "={{ $('Check Delivery').first().json.booking.rescheduled_from }}"
+            },
+            {
+              "keyName": "status",
+              "condition": "eq",
+              "keyValue": "booked"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "status": "rescheduled",
+            "rescheduled_to": "={{ $('Check Delivery').first().json.booking.uid }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "rescheduled_to",
+              "displayName": "rescheduled_to",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "k1-38",
+      "name": "Old Booking Marked?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "executeOnce": true,
+      "position": [
+        3860,
+        -40
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "k1-39",
+              "leftValue": "={{ Object.keys($json).length === 0 || $json.uid === $('Check Delivery').first().json.booking.rescheduled_from }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "k1-40",
+      "name": "Look Up Booking",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput",
+      "position": [
+        4080,
+        -20
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Bookings Table').all().find((t) => t.json.name === $('Booking Settings').first().json.bookings_table_name.trim()).json.id }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "uid",
+              "condition": "eq",
+              "keyValue": "={{ $('Check Delivery').first().json.booking.uid }}"
+            }
+          ]
+        },
+        "returnAll": true
+      }
+    },
+    {
+      "id": "k1-41",
+      "name": "Already Stored?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "executeOnce": true,
+      "position": [
+        4300,
+        -20
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "k1-42",
+              "leftValue": "={{ $('Look Up Booking').all().some((r) => r.json.id !== undefined && r.json.uid === $('Check Delivery').first().json.booking.uid) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "k1-43",
+      "name": "Answer Duplicate",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        4520,
+        -40
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: true, ignored: 'Booking ' + $('Check Delivery').first().json.booking.uid + ' is already stored.' }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "k1-44",
+      "name": "Nothing Stored Yet?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "executeOnce": true,
+      "position": [
+        4520,
+        140
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "k1-45",
+              "leftValue": "={{ $('Look Up Booking').all().every((r) => Object.keys(r.json).length === 0) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "k1-46",
+      "name": "Insert Booking Row",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "onError": "continueErrorOutput",
+      "position": [
+        4740,
+        120
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "insert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Bookings Table').all().find((t) => t.json.name === $('Booking Settings').first().json.bookings_table_name.trim()).json.id }}"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "uid": "={{ $('Check Delivery').first().json.booking.uid }}",
+            "status": "booked",
+            "title": "={{ $('Check Delivery').first().json.booking.title }}",
+            "start_at": "={{ $('Check Delivery').first().json.booking.start_at }}",
+            "end_at": "={{ $('Check Delivery').first().json.booking.end_at }}",
+            "attendee_name": "={{ $('Check Delivery').first().json.booking.attendee_name }}",
+            "attendee_email": "={{ $('Check Delivery').first().json.booking.attendee_email }}",
+            "attendee_time_zone": "={{ $('Check Delivery').first().json.booking.attendee_time_zone }}",
+            "guest_emails": "={{ $('Check Delivery').first().json.booking.guest_emails }}",
+            "organizer_email": "={{ $('Check Delivery').first().json.booking.organizer_email }}",
+            "meeting_url": "={{ $('Check Delivery').first().json.booking.meeting_url }}",
+            "rescheduled_from": "={{ $('Check Delivery').first().json.booking.rescheduled_from }}",
+            "rescheduled_to": "",
+            "cancellation_reason": "",
+            "booked_at": "={{ $('Check Delivery').first().json.booking.booked_at }}",
+            "reminders_sent": "={{ 0 }}",
+            "last_error": ""
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "uid",
+              "displayName": "uid",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "title",
+              "displayName": "title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "start_at",
+              "displayName": "start_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "date",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "end_at",
+              "displayName": "end_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "date",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "attendee_name",
+              "displayName": "attendee_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "attendee_email",
+              "displayName": "attendee_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "attendee_time_zone",
+              "displayName": "attendee_time_zone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "guest_emails",
+              "displayName": "guest_emails",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "organizer_email",
+              "displayName": "organizer_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "meeting_url",
+              "displayName": "meeting_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "rescheduled_from",
+              "displayName": "rescheduled_from",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "rescheduled_to",
+              "displayName": "rescheduled_to",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "cancellation_reason",
+              "displayName": "cancellation_reason",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "booked_at",
+              "displayName": "booked_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "date",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "reminders_sent",
+              "displayName": "reminders_sent",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "last_error",
+              "displayName": "last_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "k1-47",
+      "name": "Row Stored?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        4960,
+        120
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "k1-48",
+              "leftValue": "={{ $json.id !== undefined && $json.uid === $('Check Delivery').first().json.booking.uid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "k1-49",
+      "name": "Answer Stored",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        5180,
+        100
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: true, result: $('Check Delivery').first().json.action === 'rescheduled' ? 'rescheduled' : 'stored', uid: $('Check Delivery').first().json.booking.uid }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "k1-50",
+      "name": "Report Store Failure",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        5180,
+        300
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: false, error: 'The booking could not be saved in the data table.' }) }}",
+        "options": {
+          "responseCode": 500
+        }
+      }
+    },
+    {
+      "id": "k1-51",
+      "name": "Fail Run: Booking Not Saved",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        5400,
+        300
+      ],
+      "parameters": {
+        "errorType": "errorMessage",
+        "errorMessage": "={{ 'Booking ' + $('Check Delivery').first().json.booking.uid + ' (' + $('Check Delivery').first().json.action + ') could not be saved in the data table. Cal.com does not resend deliveries: check this booking in Cal.com and fix its row by hand.' }}"
+      }
+    },
+    {
+      "id": "k1-52",
+      "name": "Cancel Booking Row",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "onError": "continueErrorOutput",
+      "position": [
+        3420,
+        240
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Bookings Table').all().find((t) => t.json.name === $('Booking Settings').first().json.bookings_table_name.trim()).json.id }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "uid",
+              "condition": "eq",
+              "keyValue": "={{ $('Check Delivery').first().json.booking.uid }}"
+            },
+            {
+              "keyName": "status",
+              "condition": "eq",
+              "keyValue": "booked"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "status": "cancelled",
+            "cancellation_reason": "={{ $('Check Delivery').first().json.booking.cancellation_reason }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "cancellation_reason",
+              "displayName": "cancellation_reason",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "k1-53",
+      "name": "Cancel Saved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "executeOnce": true,
+      "position": [
+        3640,
+        240
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "k1-54",
+              "leftValue": "={{ Object.keys($json).length === 0 || $json.uid === $('Check Delivery').first().json.booking.uid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "k1-55",
+      "name": "Answer Cancel",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        3860,
+        220
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: true, result: $json.uid === $('Check Delivery').first().json.booking.uid ? 'cancelled' : 'nothing to cancel (unknown, already cancelled or rescheduled)', uid: $('Check Delivery').first().json.booking.uid }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "k1-56",
+      "name": "Load Upcoming Bookings",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "position": [
+        2920,
+        720
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Bookings Table').all().find((t) => t.json.name === $('Booking Settings').first().json.bookings_table_name.trim()).json.id }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "status",
+              "condition": "eq",
+              "keyValue": "booked"
+            },
+            {
+              "keyName": "start_at",
+              "condition": "gt",
+              "keyValue": "={{ $now.toISO() }}"
+            }
+          ]
+        },
+        "returnAll": true
+      }
+    },
+    {
+      "id": "k1-57",
+      "name": "Pick Due Reminders",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3140,
+        720
+      ],
+      "parameters": {
+        "jsCode": "// Finds booked meetings whose reminder is due and writes the email.\nconst s = $('Booking Settings').first().json;\nconst hours = (v, d) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : d);\nconst first = hours(s.first_reminder_hours, 24) * 3600000;\nconst second = hours(s.second_reminder_hours, 1) * 3600000;\nconst now = Date.now();\nconst esc = (v) => String(v ?? '').replace(/[&<>\"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', \"'\": '&#39;' }[c]));\n// If two copies of one booking were stored at the same moment, only the oldest row (lowest id) gets reminders.\nconst oldest = {};\nfor (const { json: b } of $input.all()) if (b.id !== undefined && b.uid && (oldest[b.uid] === undefined || b.id < oldest[b.uid])) oldest[b.uid] = b.id;\nconst out = [];\nfor (const { json: b } of $input.all()) {\n  if (b.id === undefined || oldest[b.uid] !== b.id || b.status !== 'booked' || !b.attendee_email) continue;\n  const start = new Date(b.start_at).getTime();\n  const left = start - now;\n  if (!Number.isFinite(start) || left <= 0) continue;\n  const lead = start - new Date(b.booked_at).getTime(); // how far ahead it was booked or rescheduled\n  const sent = Number(b.reminders_sent) || 0;\n  let kind = 0;\n  if (sent < 2 && left <= second && lead > second) kind = 2;\n  else if (sent < 1 && left <= first && left > second && lead > first) kind = 1;\n  if (!kind) continue;\n  const zone = b.attendee_time_zone && DateTime.now().setZone(b.attendee_time_zone).isValid ? b.attendee_time_zone : $now.zoneName;\n  const when = DateTime.fromMillis(start, { zone }).toFormat(\"cccc d LLLL yyyy 'at' HH:mm\") + ' (' + zone + ')';\n  const title = b.title || 'your meeting';\n  const link = /^https:\\/\\//.test(b.meeting_url || '') ? '<p>Join here: <a href=\"' + esc(b.meeting_url) + '\">' + esc(b.meeting_url) + '</a></p>' : '';\n  out.push({ json: {\n    row_id: b.id, uid: b.uid, kind, previous_sent: sent, to: b.attendee_email,\n    subject: 'Reminder: ' + title + ' on ' + when,\n    html: '<p>Hi ' + esc(b.attendee_name || 'there') + ',</p><p>This is a reminder of <b>' + esc(title) + '</b> on ' + esc(when) + '.</p>' + link + '<p>See you soon.</p>',\n  } });\n}\nreturn out;"
+      }
+    },
+    {
+      "id": "k1-58",
+      "name": "Loop Over Reminders",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        3360,
+        720
+      ],
+      "parameters": {
+        "options": {}
+      }
+    },
+    {
+      "id": "k1-59",
+      "name": "Claim Reminder",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput",
+      "position": [
+        3580,
+        740
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Bookings Table').all().find((t) => t.json.name === $('Booking Settings').first().json.bookings_table_name.trim()).json.id }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "condition": "eq",
+              "keyValue": "={{ $json.row_id }}"
+            },
+            {
+              "keyName": "status",
+              "condition": "eq",
+              "keyValue": "booked"
+            },
+            {
+              "keyName": "reminders_sent",
+              "condition": "lt",
+              "keyValue": "={{ $json.kind }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "reminders_sent": "={{ $json.kind }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "reminders_sent",
+              "displayName": "reminders_sent",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "k1-60",
+      "name": "Reminder Claimed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3800,
+        740
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "k1-61",
+              "leftValue": "={{ $json.id === $('Loop Over Reminders').first().json.row_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "k1-62",
+      "name": "Send Reminder Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "onError": "continueErrorOutput",
+      "position": [
+        4020,
+        720
+      ],
+      "parameters": {
+        "fromEmail": "={{ $('Booking Settings').first().json.from_email }}",
+        "toEmail": "={{ $('Loop Over Reminders').first().json.to }}",
+        "subject": "={{ $('Loop Over Reminders').first().json.subject }}",
+        "emailFormat": "html",
+        "html": "={{ $('Loop Over Reminders').first().json.html }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "smtp": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "k1-63",
+      "name": "Release Reminder",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput",
+      "position": [
+        4240,
+        880
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Bookings Table').all().find((t) => t.json.name === $('Booking Settings').first().json.bookings_table_name.trim()).json.id }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "condition": "eq",
+              "keyValue": "={{ $('Loop Over Reminders').first().json.row_id }}"
+            },
+            {
+              "keyName": "reminders_sent",
+              "condition": "eq",
+              "keyValue": "={{ $('Loop Over Reminders').first().json.kind }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "reminders_sent": "={{ $('Loop Over Reminders').first().json.previous_sent }}",
+            "last_error": "={{ String($json.error?.message || $json.error || 'send failed').slice(0, 500) }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "reminders_sent",
+              "displayName": "reminders_sent",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "last_error",
+              "displayName": "last_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Run Once to Create Bookings Table": {
+      "main": [
+        [
+          {
+            "node": "Booking Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Receive Cal.com Webhook": {
+      "main": [
+        [
+          {
+            "node": "Booking Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Reminders Every 5 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Booking Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Booking Settings": {
+      "main": [
+        [
+          {
+            "node": "Setup Run?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Setup Run?": {
+      "main": [
+        [
+          {
+            "node": "Create Bookings Table",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "From Webhook?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "From Webhook?": {
+      "main": [
+        [
+          {
+            "node": "Sign Raw Body",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Find Bookings Table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sign Raw Body": {
+      "main": [
+        [
+          {
+            "node": "Check Delivery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Delivery": {
+      "main": [
+        [
+          {
+            "node": "Delivery Accepted?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delivery Accepted?": {
+      "main": [
+        [
+          {
+            "node": "Find Bookings Table",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Answer Rejected or Ignored",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Answer Rejected or Ignored": {
+      "main": [
+        [
+          {
+            "node": "Secret Missing?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Secret Missing?": {
+      "main": [
+        [
+          {
+            "node": "Fail Run: Secret Missing",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Find Bookings Table": {
+      "main": [
+        [
+          {
+            "node": "Bookings Table Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Bookings Table Found?": {
+      "main": [
+        [
+          {
+            "node": "Webhook Delivery?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Caller Waiting?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Caller Waiting?": {
+      "main": [
+        [
+          {
+            "node": "Report Missing Table",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fail Run: Table Missing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Report Missing Table": {
+      "main": [
+        [
+          {
+            "node": "Fail Run: Table Missing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Delivery?": {
+      "main": [
+        [
+          {
+            "node": "Cancellation?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Load Upcoming Bookings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cancellation?": {
+      "main": [
+        [
+          {
+            "node": "Cancel Booking Row",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reschedule?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reschedule?": {
+      "main": [
+        [
+          {
+            "node": "Mark Old Booking Rescheduled",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Look Up Booking",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Old Booking Rescheduled": {
+      "main": [
+        [
+          {
+            "node": "Old Booking Marked?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Report Store Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Old Booking Marked?": {
+      "main": [
+        [
+          {
+            "node": "Look Up Booking",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Report Store Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Look Up Booking": {
+      "main": [
+        [
+          {
+            "node": "Already Stored?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Already Stored?": {
+      "main": [
+        [
+          {
+            "node": "Answer Duplicate",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Nothing Stored Yet?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Nothing Stored Yet?": {
+      "main": [
+        [
+          {
+            "node": "Insert Booking Row",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Report Store Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Booking Row": {
+      "main": [
+        [
+          {
+            "node": "Row Stored?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Row Stored?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Row Stored?": {
+      "main": [
+        [
+          {
+            "node": "Answer Stored",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Report Store Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Report Store Failure": {
+      "main": [
+        [
+          {
+            "node": "Fail Run: Booking Not Saved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cancel Booking Row": {
+      "main": [
+        [
+          {
+            "node": "Cancel Saved?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Report Store Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cancel Saved?": {
+      "main": [
+        [
+          {
+            "node": "Answer Cancel",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Report Store Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Upcoming Bookings": {
+      "main": [
+        [
+          {
+            "node": "Pick Due Reminders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick Due Reminders": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Reminders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Reminders": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Claim Reminder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Reminder": {
+      "main": [
+        [
+          {
+            "node": "Reminder Claimed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reminder Claimed?": {
+      "main": [
+        [
+          {
+            "node": "Send Reminder Email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Loop Over Reminders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Reminder Email": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Reminders",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Release Reminder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Release Reminder": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Reminders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {}
+}

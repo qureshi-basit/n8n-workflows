@@ -18,6 +18,10 @@ Workflows published on [basitq.cloud/workflows](https://basitq.cloud/workflows).
 | [n8n Data Table JSON API for Website with Pagination](workflows/n8n-data-table-json-api-for-website-with-pagination.json) | [basitq.cloud](https://basitq.cloud/workflows/n8n-data-table-json-api-for-website-with-pagination) |
 | [n8n Form Conditional Questions Based on Previous Answers](workflows/n8n-form-conditional-questions-based-on-previous-answers.json) | [basitq.cloud](https://basitq.cloud/workflows/n8n-form-conditional-questions-based-on-previous-answers) |
 | [RSS Feed Keyword Alerts Email Digest Without Duplicates](workflows/rss-feed-keyword-alerts-email-digest-without-duplicates.json) | [basitq.cloud](https://basitq.cloud/workflows/rss-feed-keyword-alerts-email-digest-without-duplicates) |
+| [Schedule Trigger First or Last Working Day of Month](workflows/schedule-trigger-first-or-last-working-day-of-month.json) | [basitq.cloud](https://basitq.cloud/workflows/schedule-trigger-first-or-last-working-day-of-month) |
+| [Cal.com Webhook Bookings to Data Table with Email Reminders](workflows/cal-com-webhook-bookings-to-data-table-with-email-reminders.json) | [basitq.cloud](https://basitq.cloud/workflows/cal-com-webhook-bookings-to-data-table-with-email-reminders) |
+| [HTTP Request Access Token Auto Refresh with Data Tables](workflows/http-request-access-token-auto-refresh-with-data-tables.json) | [basitq.cloud](https://basitq.cloud/workflows/http-request-access-token-auto-refresh-with-data-tables) |
+| [n8n Form Quote Request to Emailed PDF with Gotenberg](workflows/n8n-form-quote-request-to-emailed-pdf-with-gotenberg.json) | [basitq.cloud](https://basitq.cloud/workflows/n8n-form-quote-request-to-emailed-pdf-with-gotenberg) |
 
 ## Use one
 

@@ -1,0 +1,2675 @@
+{
+  "name": "HTTP Request Access Token Auto Refresh with Data Tables",
+  "nodes": [
+    {
+      "id": "e1-1",
+      "name": "Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1160,
+        -460
+      ],
+      "parameters": {
+        "content": "### How it works\nCallers (**Execute Workflow** node) get `access_token`, `authorization` (\"Bearer …\"), `expires_at` and `source`.\n1. A token valid beyond `refresh_before_expiry_seconds` is returned from the `connection_name` row.\n2. Otherwise one execution renews under a lock; parallel callers wait for it.\n3. It refreshes, or logs in if that fails or no refresh token exists.\n4. A failed login emails `alert_email_to` (once per `alert_cooldown_minutes`) and errors the caller.\n5. After a 401, call again with `rejected_token` set to that token for a newer one.\n\n### Setup\n1. Create two **Custom Auth** credentials: login secrets for **Log In for New Token** (`{\"body\":{\"username\":\"…\",\"password\":\"…\"}}`), refresh secrets for **Refresh Access Token** (`{\"body\":{\"client_id\":\"…\"}}` or `{\"body\":{}}`).\n2. Attach SMTP to **Email Login Failure**; your server must allow `alert_email_from`.\n3. In **Token Settings** set URLs, table/field names (dot paths work) and `request_body_format` (json/form). `default_lifetime_seconds` applies when a response lacks expires_in. The lock lasts max(`lock_seconds`, 2×`request_timeout_seconds`+10) seconds.\n4. API contract: both requests POST; any 2xx succeeds. Login body: credential body + `login_extra_fields`. Refresh body: credential body + `refresh_extra_fields` + {`refresh_token_param`: token}. Read: `access_token_field` (leading \"Bearer \" removed), `refresh_token_field`, `expires_in_field` (seconds). No refresh token in a login answer means the next renewal logs in.\n5. Execute **Run Once to Create Table** (needs table create rights), publish, set **Try It Settings**, run **Try It**. Publish again after changing Token Settings or credentials.\n\n### Customization\nOne copy per API, each with its own `connection_name`; copies can share the table.\n\nLimits: tokens are stored unencrypted. Failing logins retry on every call. A failed table write errors the caller and keeps the lock until it expires. Tested on n8n 2.48.7; lock tested on SQLite-backed n8n.",
+        "width": 680,
+        "height": 1300
+      }
+    },
+    {
+      "id": "e1-2",
+      "name": "Start Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -440,
+        -460
+      ],
+      "parameters": {
+        "content": "## Start and settings\nTwo ways in: a call from another workflow and the one-time table setup. Every token value you change is in **Token Settings**.",
+        "width": 900,
+        "height": 760,
+        "color": 7
+      }
+    },
+    {
+      "id": "e1-3",
+      "name": "Cache Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        500,
+        -100
+      ],
+      "parameters": {
+        "content": "## Read the cached token\nFinds the table by exact name and the row of `connection_name` (adds it on first use). A token valid beyond the refresh margin is returned right away.",
+        "width": 1360,
+        "height": 400,
+        "color": 7
+      }
+    },
+    {
+      "id": "e1-4",
+      "name": "Lock Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1900,
+        -100
+      ],
+      "parameters": {
+        "content": "## One refresh at a time\nA conditional update claims the lock. Others check every second and return the new token or the error of the execution holding it, or fail if its lock runs out.",
+        "width": 900,
+        "height": 820,
+        "color": 7
+      }
+    },
+    {
+      "id": "e1-5",
+      "name": "Renew Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2840,
+        -100
+      ],
+      "parameters": {
+        "content": "## Refresh, then log in\nRefresh first. Any refresh failure (rejected, timeout, non-2xx) falls back to a full login with the login credential. Both send a JSON or form body, set by `request_body_format`.",
+        "width": 1120,
+        "height": 560,
+        "color": 7
+      }
+    },
+    {
+      "id": "e1-6",
+      "name": "Save Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        4000,
+        -100
+      ],
+      "parameters": {
+        "content": "## Save and return\nStores the new tokens and expiry, releases the lock and returns the token. **Return Token** is the output callers receive.",
+        "width": 680,
+        "height": 400,
+        "color": 7
+      }
+    },
+    {
+      "id": "e1-7",
+      "name": "Failure Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        3640,
+        500
+      ],
+      "parameters": {
+        "content": "## Login failed\nSaves the error and releases the lock, emails the alert unless one was sent within `alert_cooldown_minutes`, then ends with an error for the caller.",
+        "width": 1340,
+        "height": 400,
+        "color": 7
+      }
+    },
+    {
+      "id": "e1-8",
+      "name": "Try Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -440,
+        340
+      ],
+      "parameters": {
+        "content": "## Try It: call an API with a 401 retry\nSet `api_url` in **Try It Settings**. To reuse, copy these nodes into your workflow and select this workflow in both Execute Workflow nodes. On HTTP 401 the token is requested again with `rejected_token` and the call retried once.",
+        "width": 1520,
+        "height": 400,
+        "color": 7
+      }
+    },
+    {
+      "id": "e1-9",
+      "name": "When Called by Another Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -400,
+        -340
+      ],
+      "parameters": {
+        "inputSource": "workflowInputs",
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "rejected_token",
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "e1-10",
+      "name": "Run Once to Create Table",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -400,
+        -160
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "e1-11",
+      "name": "Try It: Call API With Token",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -400,
+        460
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "e1-12",
+      "name": "Token Settings",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -160,
+        -160
+      ],
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "s1",
+              "name": "connection_name",
+              "type": "string",
+              "value": "my-api"
+            },
+            {
+              "id": "s2",
+              "name": "token_table_name",
+              "type": "string",
+              "value": "api_access_tokens"
+            },
+            {
+              "id": "s3",
+              "name": "login_url",
+              "type": "string",
+              "value": "https://api.example.com/auth/login"
+            },
+            {
+              "id": "s4",
+              "name": "login_extra_fields",
+              "type": "object",
+              "value": "{}"
+            },
+            {
+              "id": "s5",
+              "name": "refresh_url",
+              "type": "string",
+              "value": "https://api.example.com/auth/refresh"
+            },
+            {
+              "id": "s6",
+              "name": "refresh_token_param",
+              "type": "string",
+              "value": "refresh_token"
+            },
+            {
+              "id": "s7",
+              "name": "refresh_extra_fields",
+              "type": "object",
+              "value": "{\"grant_type\":\"refresh_token\"}"
+            },
+            {
+              "id": "s19",
+              "name": "request_body_format",
+              "type": "string",
+              "value": "json"
+            },
+            {
+              "id": "s8",
+              "name": "access_token_field",
+              "type": "string",
+              "value": "access_token"
+            },
+            {
+              "id": "s9",
+              "name": "refresh_token_field",
+              "type": "string",
+              "value": "refresh_token"
+            },
+            {
+              "id": "s10",
+              "name": "expires_in_field",
+              "type": "string",
+              "value": "expires_in"
+            },
+            {
+              "id": "s11",
+              "name": "default_lifetime_seconds",
+              "type": "number",
+              "value": 3600
+            },
+            {
+              "id": "s12",
+              "name": "refresh_before_expiry_seconds",
+              "type": "number",
+              "value": 120
+            },
+            {
+              "id": "s13",
+              "name": "request_timeout_seconds",
+              "type": "number",
+              "value": 15
+            },
+            {
+              "id": "s14",
+              "name": "lock_seconds",
+              "type": "number",
+              "value": 60
+            },
+            {
+              "id": "s15",
+              "name": "alert_email_to",
+              "type": "string",
+              "value": "ops@example.com"
+            },
+            {
+              "id": "s16",
+              "name": "alert_email_from",
+              "type": "string",
+              "value": "n8n@example.com"
+            },
+            {
+              "id": "s17",
+              "name": "alert_cooldown_minutes",
+              "type": "number",
+              "value": 60
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "e1-13",
+      "name": "Route by Trigger",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        80,
+        -160
+      ],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "e1-14",
+                    "leftValue": "={{ $('Run Once to Create Table').isExecuted ? 'setup' : 'token' }}",
+                    "rightValue": "token",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Token Request"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "e1-15",
+                    "leftValue": "={{ $('Run Once to Create Table').isExecuted ? 'setup' : 'token' }}",
+                    "rightValue": "setup",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Create Table"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "e1-16",
+      "name": "Create Token Table",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        300,
+        0
+      ],
+      "parameters": {
+        "resource": "table",
+        "operation": "create",
+        "tableName": "={{ $('Token Settings').first().json.token_table_name.trim() }}",
+        "columns": {
+          "column": [
+            {
+              "name": "connection_name",
+              "type": "string"
+            },
+            {
+              "name": "access_token",
+              "type": "string"
+            },
+            {
+              "name": "refresh_token",
+              "type": "string"
+            },
+            {
+              "name": "expires_at",
+              "type": "date"
+            },
+            {
+              "name": "lock_token",
+              "type": "string"
+            },
+            {
+              "name": "locked_until",
+              "type": "date"
+            },
+            {
+              "name": "last_method",
+              "type": "string"
+            },
+            {
+              "name": "last_refreshed_at",
+              "type": "date"
+            },
+            {
+              "name": "last_error",
+              "type": "string"
+            },
+            {
+              "name": "last_error_at",
+              "type": "date"
+            },
+            {
+              "name": "last_alert_at",
+              "type": "date"
+            }
+          ]
+        },
+        "options": {
+          "createIfNotExists": true
+        }
+      }
+    },
+    {
+      "id": "e1-17",
+      "name": "Check Settings",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        300,
+        -340
+      ],
+      "parameters": {
+        "jsCode": "// Stops with a clear message when a setting cannot work.\nconst s = $('Token Settings').first().json;\nconst problems = [];\nconst text = (k) => typeof s[k] === 'string' && s[k].trim() !== '';\nfor (const k of ['connection_name', 'token_table_name', 'refresh_token_param', 'access_token_field', 'refresh_token_field', 'expires_in_field']) if (!text(k)) problems.push(k + ' is empty');\nfor (const k of ['login_url', 'refresh_url']) if (!/^https?:\\/\\/\\S+$/i.test(String(s[k] ?? '').trim())) problems.push(k + ' is not an http(s) URL');\nfor (const k of ['login_extra_fields', 'refresh_extra_fields']) if (!s[k] || typeof s[k] !== 'object' || Array.isArray(s[k])) problems.push(k + ' must be a JSON object, e.g. {}');\nfor (const k of ['default_lifetime_seconds', 'request_timeout_seconds', 'lock_seconds']) if (!(Number(s[k]) > 0)) problems.push(k + ' must be a number above 0');\nif (!['json', 'form'].includes(String(s.request_body_format ?? '').trim().toLowerCase())) problems.push('request_body_format must be json or form');\nif (!(Number(s.refresh_before_expiry_seconds) >= 0)) problems.push('refresh_before_expiry_seconds must be 0 or more');\nif (!(Number(s.alert_cooldown_minutes) >= 0)) problems.push('alert_cooldown_minutes must be 0 or more');\nif (!/^[^@\\s]+@[^@\\s]+$/.test(String(s.alert_email_to ?? '').trim())) problems.push('alert_email_to is not an email address');\nif (problems.length) throw new Error('Token Settings: ' + problems.join('; ') + '.');\nreturn [{ json: { ok: true } }];"
+      }
+    },
+    {
+      "id": "e1-18",
+      "name": "Find Token Table",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "position": [
+        540,
+        40
+      ],
+      "parameters": {
+        "resource": "table",
+        "operation": "list",
+        "returnAll": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "e1-19",
+      "name": "Table Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "executeOnce": true,
+      "position": [
+        760,
+        40
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "e1-20",
+              "leftValue": "={{ $('Find Token Table').all().some((t) => t.json.name === $('Token Settings').first().json.token_table_name.trim()) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "e1-21",
+      "name": "Stop: Table Missing",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        760,
+        200
+      ],
+      "parameters": {
+        "errorMessage": "={{ 'Data table \"' + $('Token Settings').first().json.token_table_name.trim() + '\" not found. Execute \"Run Once to Create Table\" in the token workflow or fix token_table_name in Token Settings.' }}"
+      }
+    },
+    {
+      "id": "e1-22",
+      "name": "Load Token Row",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "position": [
+        980,
+        40
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Token Table').all().find((t) => t.json.name === $('Token Settings').first().json.token_table_name.trim()).json.id }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "connection_name",
+              "condition": "eq",
+              "keyValue": "={{ $('Token Settings').first().json.connection_name.trim() }}"
+            }
+          ]
+        },
+        "returnAll": true
+      }
+    },
+    {
+      "id": "e1-23",
+      "name": "Row Exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "executeOnce": true,
+      "position": [
+        1200,
+        40
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "e1-24",
+              "leftValue": "={{ $('Load Token Row').all().some((i) => i.json.id !== undefined) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "e1-25",
+      "name": "Create Token Row",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        1200,
+        200
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "insert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Token Table').all().find((t) => t.json.name === $('Token Settings').first().json.token_table_name.trim()).json.id }}"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "connection_name": "={{ $('Token Settings').first().json.connection_name.trim() }}",
+            "access_token": "",
+            "refresh_token": "",
+            "expires_at": "2000-01-01T00:00:00.000Z",
+            "lock_token": "",
+            "locked_until": "2000-01-01T00:00:00.000Z",
+            "last_method": "",
+            "last_refreshed_at": "2000-01-01T00:00:00.000Z",
+            "last_error": "",
+            "last_error_at": "2000-01-01T00:00:00.000Z",
+            "last_alert_at": "2000-01-01T00:00:00.000Z"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "connection_name",
+              "displayName": "connection_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "access_token",
+              "displayName": "access_token",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "refresh_token",
+              "displayName": "refresh_token",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "expires_at",
+              "displayName": "expires_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "lock_token",
+              "displayName": "lock_token",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "locked_until",
+              "displayName": "locked_until",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "last_method",
+              "displayName": "last_method",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "last_refreshed_at",
+              "displayName": "last_refreshed_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "last_error",
+              "displayName": "last_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "last_error_at",
+              "displayName": "last_error_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "last_alert_at",
+              "displayName": "last_alert_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "e1-26",
+      "name": "Reload Token Row",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "position": [
+        1420,
+        200
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Token Table').all().find((t) => t.json.name === $('Token Settings').first().json.token_table_name.trim()).json.id }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "connection_name",
+              "condition": "eq",
+              "keyValue": "={{ $('Token Settings').first().json.connection_name.trim() }}"
+            }
+          ]
+        },
+        "returnAll": true
+      }
+    },
+    {
+      "id": "e1-27",
+      "name": "Check Token",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1640,
+        40
+      ],
+      "parameters": {
+        "jsCode": "// Returns the cached token when it is still valid, otherwise asks for a new one.\nconst s = $('Token Settings').first().json;\nconst rejected = String($('When Called by Another Workflow').first().json.rejected_token ?? '').trim();\nconst rows = $input.all().map((i) => i.json).filter((r) => r.id !== undefined).sort((a, b) => a.id - b.id);\n// Two callers starting at the very same moment can each add a row; the oldest one is used.\nconst row = rows[0];\nif (!row) throw new Error('The token row for \"' + s.connection_name.trim() + '\" could not be read.');\nconst token = String(row.access_token ?? '');\nconst expires = row.expires_at ? new Date(row.expires_at).getTime() : NaN;\nconst valid = token !== '' && token !== rejected && Number.isFinite(expires) && expires - Number(s.refresh_before_expiry_seconds) * 1000 > Date.now();\nreturn [{ json: {\n  action: valid ? 'cached' : 'renew',\n  row_id: row.id,\n  rejected_token: rejected,\n  checked_at: new Date().toISOString(),\n  access_token: valid ? token : '',\n  expires_at: valid ? new Date(expires).toISOString() : '',\n  source: 'cache',\n} }];"
+      }
+    },
+    {
+      "id": "e1-28",
+      "name": "Token Still Valid?",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1640,
+        200
+      ],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "e1-29",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "cached",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Valid"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "e1-30",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "renew",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Renew"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "e1-31",
+      "name": "Claim Refresh Lock",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "position": [
+        1940,
+        40
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Token Table').all().find((t) => t.json.name === $('Token Settings').first().json.token_table_name.trim()).json.id }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "condition": "eq",
+              "keyValue": "={{ $('Check Token').first().json.row_id }}"
+            },
+            {
+              "keyName": "locked_until",
+              "condition": "lt",
+              "keyValue": "={{ $now.toUTC().toISO() }}"
+            },
+            {
+              "keyName": "last_error_at",
+              "condition": "lt",
+              "keyValue": "={{ $('Check Token').first().json.checked_at }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "lock_token": "={{ String($execution.id) }}",
+            "locked_until": "={{ $now.plus({ seconds: Math.max(Number($('Token Settings').first().json.lock_seconds) || 60, 2 * (Number($('Token Settings').first().json.request_timeout_seconds) || 15) + 10) }).toUTC().toISO() }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "lock_token",
+              "displayName": "lock_token",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "locked_until",
+              "displayName": "locked_until",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "e1-32",
+      "name": "Read Locked Row",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "position": [
+        2160,
+        40
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Token Table').all().find((t) => t.json.name === $('Token Settings').first().json.token_table_name.trim()).json.id }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "condition": "eq",
+              "keyValue": "={{ $('Check Token').first().json.row_id }}"
+            }
+          ]
+        },
+        "returnAll": true
+      }
+    },
+    {
+      "id": "e1-33",
+      "name": "Decide After Lock",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2380,
+        40
+      ],
+      "parameters": {
+        "jsCode": "const s = $('Token Settings').first().json;\nconst chk = $('Check Token').first().json;\nconst rows = $input.all().map((i) => i.json).filter((r) => r.id !== undefined);\nconst row = rows.find((r) => r.id === chk.row_id);\nconst token = row ? String(row.access_token ?? '') : '';\nconst expires = row && row.expires_at ? new Date(row.expires_at).getTime() : NaN;\nconst valid = token !== '' && token !== chk.rejected_token && Number.isFinite(expires) && expires - Number(s.refresh_before_expiry_seconds) * 1000 > Date.now();\nconst failedAt = row && row.last_error_at ? new Date(row.last_error_at).getTime() : 0;\nconst failedSinceStart = failedAt > new Date(chk.checked_at).getTime();\nconst name = s.connection_name.trim();\nconst found = (extra) => [{ json: { access_token: token, expires_at: new Date(expires).toISOString(), source: 'other_execution', ...extra } }];\nconst fail = (message) => [{ json: { action: 'fail', message } }];\nif (!row) return fail('The token row for \"' + name + '\" was deleted while this execution was running.');\n// This execution holds the lock only if the conditional update above wrote its execution id.\nconst owned = row.lock_token === String($execution.id) && new Date(row.locked_until).getTime() > Date.now();\n// Another execution may have saved a new token between the first check and the lock.\nif (valid) return found({ action: owned ? 'release' : 'return' });\nif (failedSinceStart) return fail('Another execution failed to get a token for \"' + name + '\" a moment ago: ' + row.last_error);\nif (!owned) return [{ json: { action: 'wait' } }];\nconst refreshToken = String(row.refresh_token ?? '');\nreturn [{ json: { action: refreshToken ? 'refresh' : 'login', refresh_token: refreshToken } }];"
+      }
+    },
+    {
+      "id": "e1-34",
+      "name": "Next Step",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        2600,
+        40
+      ],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "e1-35",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "refresh",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Refresh"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "e1-36",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "login",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Log In"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "e1-37",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "wait",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Wait"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "e1-38",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "return",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Use New Token"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "e1-39",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "release",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Release and Use"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "e1-40",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "fail",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Failed"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "e1-41",
+      "name": "Wait 1 Second",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1940,
+        300
+      ],
+      "parameters": {
+        "resume": "timeInterval",
+        "amount": 1,
+        "unit": "seconds"
+      }
+    },
+    {
+      "id": "e1-42",
+      "name": "Read Row While Waiting",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "position": [
+        2160,
+        300
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Token Table').all().find((t) => t.json.name === $('Token Settings').first().json.token_table_name.trim()).json.id }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "condition": "eq",
+              "keyValue": "={{ $('Check Token').first().json.row_id }}"
+            }
+          ]
+        },
+        "returnAll": true
+      }
+    },
+    {
+      "id": "e1-43",
+      "name": "Check Other Execution",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2380,
+        300
+      ],
+      "parameters": {
+        "jsCode": "const s = $('Token Settings').first().json;\nconst chk = $('Check Token').first().json;\nconst rows = $input.all().map((i) => i.json).filter((r) => r.id !== undefined);\nconst row = rows.find((r) => r.id === chk.row_id);\nconst token = row ? String(row.access_token ?? '') : '';\nconst expires = row && row.expires_at ? new Date(row.expires_at).getTime() : NaN;\nconst valid = token !== '' && token !== chk.rejected_token && Number.isFinite(expires) && expires - Number(s.refresh_before_expiry_seconds) * 1000 > Date.now();\nconst failedAt = row && row.last_error_at ? new Date(row.last_error_at).getTime() : 0;\nconst failedSinceStart = failedAt > new Date(chk.checked_at).getTime();\nconst name = s.connection_name.trim();\nconst found = (extra) => [{ json: { access_token: token, expires_at: new Date(expires).toISOString(), source: 'other_execution', ...extra } }];\nconst fail = (message) => [{ json: { action: 'fail', message } }];\nif (!row) return fail('The token row for \"' + name + '\" was deleted while this execution was running.');\n// Waits for the execution that holds the lock: its new token, its error, or the lock running out.\nif (valid) return found({ action: 'return' });\nif (failedSinceStart) return fail('Another execution failed to get a token for \"' + name + '\" a moment ago: ' + row.last_error);\nconst lockSeconds = Math.max(Number(s.lock_seconds) || 60, 2 * (Number(s.request_timeout_seconds) || 15) + 10);\nconst lockedUntil = row.locked_until ? new Date(row.locked_until).getTime() : 0;\nif (lockedUntil <= Date.now() || Date.now() - new Date(chk.checked_at).getTime() > (lockSeconds + 10) * 1000) {\n  return fail('The execution refreshing the token for \"' + name + '\" did not finish within lock_seconds. The next call tries again.');\n}\nreturn [{ json: { action: 'wait' } }];"
+      }
+    },
+    {
+      "id": "e1-44",
+      "name": "Wait Result",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        2600,
+        300
+      ],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "e1-45",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "wait",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Keep Waiting"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "e1-46",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "return",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "New Token"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "e1-47",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "fail",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Failed"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "e1-48",
+      "name": "Release Lock",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "position": [
+        2380,
+        560
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Token Table').all().find((t) => t.json.name === $('Token Settings').first().json.token_table_name.trim()).json.id }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "condition": "eq",
+              "keyValue": "={{ $('Check Token').first().json.row_id }}"
+            },
+            {
+              "keyName": "lock_token",
+              "condition": "eq",
+              "keyValue": "={{ String($execution.id) }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "lock_token": "",
+            "locked_until": "={{ $now.toUTC().toISO() }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "lock_token",
+              "displayName": "lock_token",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "locked_until",
+              "displayName": "locked_until",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "e1-49",
+      "name": "Stop: Other Execution Failed",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        2600,
+        560
+      ],
+      "parameters": {
+        "errorMessage": "={{ $json.message }}"
+      }
+    },
+    {
+      "id": "e1-50",
+      "name": "Refresh Access Token",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "onError": "continueRegularOutput",
+      "position": [
+        2880,
+        40
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Token Settings').first().json.refresh_url.trim() }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "={{ $('Token Settings').first().json.request_body_format.trim().toLowerCase() === 'form' ? 'application/x-www-form-urlencoded' : 'application/json' }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ ...$('Token Settings').first().json.refresh_extra_fields, [$('Token Settings').first().json.refresh_token_param.trim()]: $json.refresh_token }) }}",
+        "options": {
+          "timeout": "={{ (Number($('Token Settings').first().json.request_timeout_seconds) || 15) * 1000 }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "text",
+              "outputPropertyName": "body"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpCustomAuth": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "e1-51",
+      "name": "Read Refresh Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3100,
+        40
+      ],
+      "parameters": {
+        "jsCode": "// Reads the token fields from the refresh response (field names and dot paths from Token Settings).\nconst s = $('Token Settings').first().json;\nconst r = $input.first().json;\nconst pick = (obj, path) => String(path).trim().split('.').reduce((o, k) => (o !== null && typeof o === 'object' ? o[k] : undefined), obj);\nconst fail = (error) => [{ json: { ok: false, method: 'refresh', error } }];\nif (r.statusCode === undefined) {\n  const e = r.error || {};\n  return fail('refresh request failed: ' + String(e.message || e.description || JSON.stringify(e)).slice(0, 300));\n}\nconst code = Number(r.statusCode);\nconst text = typeof r.body === 'string' ? r.body : JSON.stringify(r.body ?? '');\nif (code < 200 || code > 299) return fail('refresh answered HTTP ' + code + ': ' + text.slice(0, 300));\nlet body = r.body;\nif (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { return fail('refresh response is not JSON.'); } }\nconst rawToken = pick(body, s.access_token_field);\n// Some APIs return the token with its scheme (\"Bearer abc\"); the scheme is removed so callers never get \"Bearer Bearer abc\".\nconst accessToken = typeof rawToken === 'string' ? rawToken.trim().replace(/^bearer\\s+/i, '') : '';\nif (accessToken === '') return fail('refresh response has no \"' + s.access_token_field + '\" text field.');\nconst newRefresh = pick(body, s.refresh_token_field);\nconst expiresIn = Number(pick(body, s.expires_in_field));\nreturn [{ json: {\n  ok: true,\n  method: 'refresh',\n  access_token: accessToken,\n  // Keep the old refresh token when a refresh answer has none; a login answer without one means \"log in again next time\".\n  refresh_token: typeof newRefresh === 'string' && newRefresh.trim() !== '' ? newRefresh.trim() : $('Decide After Lock').first().json.refresh_token,\n  expires_in: Number.isFinite(expiresIn) && expiresIn > 0 ? expiresIn : Number(s.default_lifetime_seconds),\n} }];"
+      }
+    },
+    {
+      "id": "e1-52",
+      "name": "Refresh Worked?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3320,
+        40
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "e1-53",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "e1-54",
+      "name": "Log In for New Token",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "onError": "continueRegularOutput",
+      "position": [
+        3100,
+        280
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Token Settings').first().json.login_url.trim() }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "={{ $('Token Settings').first().json.request_body_format.trim().toLowerCase() === 'form' ? 'application/x-www-form-urlencoded' : 'application/json' }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Token Settings').first().json.login_extra_fields) }}",
+        "options": {
+          "timeout": "={{ (Number($('Token Settings').first().json.request_timeout_seconds) || 15) * 1000 }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "text",
+              "outputPropertyName": "body"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpCustomAuth": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "e1-55",
+      "name": "Read Login Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3320,
+        280
+      ],
+      "parameters": {
+        "jsCode": "// Reads the token fields from the login response (field names and dot paths from Token Settings).\nconst s = $('Token Settings').first().json;\nconst r = $input.first().json;\nconst pick = (obj, path) => String(path).trim().split('.').reduce((o, k) => (o !== null && typeof o === 'object' ? o[k] : undefined), obj);\nconst fail = (error) => [{ json: { ok: false, method: 'login', error } }];\nif (r.statusCode === undefined) {\n  const e = r.error || {};\n  return fail('login request failed: ' + String(e.message || e.description || JSON.stringify(e)).slice(0, 300));\n}\nconst code = Number(r.statusCode);\nconst text = typeof r.body === 'string' ? r.body : JSON.stringify(r.body ?? '');\nif (code < 200 || code > 299) return fail('login answered HTTP ' + code + ': ' + text.slice(0, 300));\nlet body = r.body;\nif (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { return fail('login response is not JSON.'); } }\nconst rawToken = pick(body, s.access_token_field);\n// Some APIs return the token with its scheme (\"Bearer abc\"); the scheme is removed so callers never get \"Bearer Bearer abc\".\nconst accessToken = typeof rawToken === 'string' ? rawToken.trim().replace(/^bearer\\s+/i, '') : '';\nif (accessToken === '') return fail('login response has no \"' + s.access_token_field + '\" text field.');\nconst newRefresh = pick(body, s.refresh_token_field);\nconst expiresIn = Number(pick(body, s.expires_in_field));\nreturn [{ json: {\n  ok: true,\n  method: 'login',\n  access_token: accessToken,\n  // Keep the old refresh token when a refresh answer has none; a login answer without one means \"log in again next time\".\n  refresh_token: typeof newRefresh === 'string' && newRefresh.trim() !== '' ? newRefresh.trim() : '',\n  expires_in: Number.isFinite(expiresIn) && expiresIn > 0 ? expiresIn : Number(s.default_lifetime_seconds),\n} }];"
+      }
+    },
+    {
+      "id": "e1-56",
+      "name": "Login Worked?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3540,
+        280
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "e1-57",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "e1-58",
+      "name": "Build Token Record",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4040,
+        40
+      ],
+      "parameters": {
+        "jsCode": "// The new token and its expiry time.\nconst t = $input.first().json;\nreturn [{ json: { ...t, expires_at: new Date(Date.now() + t.expires_in * 1000).toISOString() } }];"
+      }
+    },
+    {
+      "id": "e1-59",
+      "name": "Save New Token",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "position": [
+        4260,
+        40
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Token Table').all().find((t) => t.json.name === $('Token Settings').first().json.token_table_name.trim()).json.id }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "condition": "eq",
+              "keyValue": "={{ $('Check Token').first().json.row_id }}"
+            },
+            {
+              "keyName": "lock_token",
+              "condition": "eq",
+              "keyValue": "={{ String($execution.id) }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "access_token": "={{ $json.access_token }}",
+            "refresh_token": "={{ $json.refresh_token }}",
+            "expires_at": "={{ $json.expires_at }}",
+            "lock_token": "",
+            "locked_until": "={{ $now.toUTC().toISO() }}",
+            "last_method": "={{ $json.method }}",
+            "last_refreshed_at": "={{ $now.toUTC().toISO() }}",
+            "last_error": ""
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "access_token",
+              "displayName": "access_token",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "refresh_token",
+              "displayName": "refresh_token",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "expires_at",
+              "displayName": "expires_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "lock_token",
+              "displayName": "lock_token",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "locked_until",
+              "displayName": "locked_until",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "last_method",
+              "displayName": "last_method",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "last_refreshed_at",
+              "displayName": "last_refreshed_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "last_error",
+              "displayName": "last_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "e1-60",
+      "name": "Return Token",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4480,
+        40
+      ],
+      "parameters": {
+        "jsCode": "// What callers receive.\nconst s = $('Token Settings').first().json;\nconst j = $input.first().json;\nconst fresh = $('Build Token Record').isExecuted ? $('Build Token Record').first().json : null;\n// After Release Lock the item is the table row; the token checked under the lock is in Decide After Lock.\nconst j2 = $prevNode.name === 'Release Lock' ? $('Decide After Lock').first().json : j;\n// A new token comes from Build Token Record (also when saving it failed); other paths carry it in their item.\nconst t = fresh ? { access_token: fresh.access_token, expires_at: fresh.expires_at, source: fresh.method } : { access_token: j2.access_token, expires_at: new Date(j2.expires_at).toISOString(), source: j2.source };\nreturn [{ json: { connection_name: s.connection_name.trim(), access_token: t.access_token, authorization: 'Bearer ' + t.access_token, expires_at: t.expires_at, source: t.source } }];"
+      }
+    },
+    {
+      "id": "e1-61",
+      "name": "Save Failure",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "position": [
+        3700,
+        640
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Token Table').all().find((t) => t.json.name === $('Token Settings').first().json.token_table_name.trim()).json.id }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "condition": "eq",
+              "keyValue": "={{ $('Check Token').first().json.row_id }}"
+            },
+            {
+              "keyName": "lock_token",
+              "condition": "eq",
+              "keyValue": "={{ String($execution.id) }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "lock_token": "",
+            "locked_until": "={{ $now.toUTC().toISO() }}",
+            "last_error": "={{ ($('Read Refresh Response').isExecuted && !$('Read Refresh Response').first().json.ok ? 'Refresh failed (' + $('Read Refresh Response').first().json.error + '), then login failed: ' : 'Login failed: ') + $json.error }}",
+            "last_error_at": "={{ $now.toUTC().toISO() }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "lock_token",
+              "displayName": "lock_token",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "locked_until",
+              "displayName": "locked_until",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "last_error",
+              "displayName": "last_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "last_error_at",
+              "displayName": "last_error_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "e1-62",
+      "name": "Alert Due?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3920,
+        640
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "e1-63",
+              "leftValue": "={{ !$json.last_alert_at || $now.diff(DateTime.fromISO(new Date($json.last_alert_at).toISOString()), 'minutes').minutes >= Number($('Token Settings').first().json.alert_cooldown_minutes) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "e1-64",
+      "name": "Email Login Failure",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "onError": "continueErrorOutput",
+      "position": [
+        4140,
+        600
+      ],
+      "parameters": {
+        "fromEmail": "={{ $('Token Settings').first().json.alert_email_from.trim() }}",
+        "toEmail": "={{ $('Token Settings').first().json.alert_email_to.trim() }}",
+        "subject": "={{ 'Token login failed: ' + $('Token Settings').first().json.connection_name.trim() }}",
+        "emailFormat": "text",
+        "text": "={{ 'n8n could not get an access token for \"' + $('Token Settings').first().json.connection_name.trim() + '\".\\n\\nError: ' + $('Save Failure').first().json.last_error + '\\nTime (UTC): ' + $now.toUTC().toISO() + '\\nWorkflow: ' + $workflow.name + '\\n\\nEvery workflow that calls it fails until login works again. Check the login credential, login_url and the API status. No further alert is sent for ' + $('Token Settings').first().json.alert_cooldown_minutes + ' minutes.' }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "smtp": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "e1-65",
+      "name": "Save Alert Time",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "position": [
+        4380,
+        600
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Find Token Table').all().find((t) => t.json.name === $('Token Settings').first().json.token_table_name.trim()).json.id }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "condition": "eq",
+              "keyValue": "={{ $('Check Token').first().json.row_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "last_alert_at": "={{ $now.toUTC().toISO() }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "last_alert_at",
+              "displayName": "last_alert_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "e1-66",
+      "name": "Stop: No Token",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        4720,
+        640
+      ],
+      "parameters": {
+        "errorMessage": "={{ 'No access token for \"' + $('Token Settings').first().json.connection_name.trim() + '\". ' + $('Save Failure').first().json.last_error + ($('Email Login Failure').isExecuted ? ($json.error ? ' The alert email could not be sent: ' + ($json.error.message || $json.error) : ' Alert email sent.') : ' Alert email skipped (one was sent within alert_cooldown_minutes).') }}"
+      }
+    },
+    {
+      "id": "e1-67",
+      "name": "Try It Settings",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -180,
+        460
+      ],
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "t1",
+              "name": "api_url",
+              "type": "string",
+              "value": "https://api.example.com/v1/me"
+            },
+            {
+              "id": "t2",
+              "name": "request_timeout_seconds",
+              "type": "number",
+              "value": 15
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "e1-68",
+      "name": "Get Access Token",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        40,
+        460
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $workflow.id }}"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "rejected_token": "={{ '' }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "rejected_token",
+              "displayName": "rejected_token",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "e1-69",
+      "name": "Call API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        260,
+        460
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Try It Settings').first().json.api_url.trim() }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $json.authorization }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": "={{ (Number($('Try It Settings').first().json.request_timeout_seconds) || 15) * 1000 }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "e1-70",
+      "name": "Got 401?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        480,
+        460
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "e1-71",
+              "leftValue": "={{ $json.statusCode === 401 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "e1-72",
+      "name": "Get Replacement Token",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        700,
+        440
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $workflow.id }}"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "rejected_token": "={{ $('Get Access Token').first().json.access_token }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "rejected_token",
+              "displayName": "rejected_token",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "e1-73",
+      "name": "Retry API Call",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        920,
+        440
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Try It Settings').first().json.api_url.trim() }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $json.authorization }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": "={{ (Number($('Try It Settings').first().json.request_timeout_seconds) || 15) * 1000 }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      }
+    }
+  ],
+  "connections": {
+    "When Called by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Token Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Once to Create Table": {
+      "main": [
+        [
+          {
+            "node": "Token Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Try It: Call API With Token": {
+      "main": [
+        [
+          {
+            "node": "Try It Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Try It Settings": {
+      "main": [
+        [
+          {
+            "node": "Get Access Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Token Settings": {
+      "main": [
+        [
+          {
+            "node": "Route by Trigger",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Trigger": {
+      "main": [
+        [
+          {
+            "node": "Check Settings",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create Token Table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Settings": {
+      "main": [
+        [
+          {
+            "node": "Find Token Table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Token Table": {
+      "main": [
+        [
+          {
+            "node": "Table Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Table Found?": {
+      "main": [
+        [
+          {
+            "node": "Load Token Row",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stop: Table Missing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Token Row": {
+      "main": [
+        [
+          {
+            "node": "Row Exists?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Row Exists?": {
+      "main": [
+        [
+          {
+            "node": "Check Token",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create Token Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Token Row": {
+      "main": [
+        [
+          {
+            "node": "Reload Token Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reload Token Row": {
+      "main": [
+        [
+          {
+            "node": "Check Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Token": {
+      "main": [
+        [
+          {
+            "node": "Token Still Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Token Still Valid?": {
+      "main": [
+        [
+          {
+            "node": "Return Token",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Claim Refresh Lock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Refresh Lock": {
+      "main": [
+        [
+          {
+            "node": "Read Locked Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Locked Row": {
+      "main": [
+        [
+          {
+            "node": "Decide After Lock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decide After Lock": {
+      "main": [
+        [
+          {
+            "node": "Next Step",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Next Step": {
+      "main": [
+        [
+          {
+            "node": "Refresh Access Token",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log In for New Token",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait 1 Second",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return Token",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Release Lock",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stop: Other Execution Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 1 Second": {
+      "main": [
+        [
+          {
+            "node": "Read Row While Waiting",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Row While Waiting": {
+      "main": [
+        [
+          {
+            "node": "Check Other Execution",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Other Execution": {
+      "main": [
+        [
+          {
+            "node": "Wait Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait Result": {
+      "main": [
+        [
+          {
+            "node": "Wait 1 Second",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return Token",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stop: Other Execution Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Release Lock": {
+      "main": [
+        [
+          {
+            "node": "Return Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Refresh Access Token": {
+      "main": [
+        [
+          {
+            "node": "Read Refresh Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Refresh Response": {
+      "main": [
+        [
+          {
+            "node": "Refresh Worked?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Refresh Worked?": {
+      "main": [
+        [
+          {
+            "node": "Build Token Record",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log In for New Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log In for New Token": {
+      "main": [
+        [
+          {
+            "node": "Read Login Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Login Response": {
+      "main": [
+        [
+          {
+            "node": "Login Worked?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Login Worked?": {
+      "main": [
+        [
+          {
+            "node": "Build Token Record",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Save Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Token Record": {
+      "main": [
+        [
+          {
+            "node": "Save New Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save New Token": {
+      "main": [
+        [
+          {
+            "node": "Return Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Failure": {
+      "main": [
+        [
+          {
+            "node": "Alert Due?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert Due?": {
+      "main": [
+        [
+          {
+            "node": "Email Login Failure",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stop: No Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Login Failure": {
+      "main": [
+        [
+          {
+            "node": "Save Alert Time",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stop: No Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Alert Time": {
+      "main": [
+        [
+          {
+            "node": "Stop: No Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Access Token": {
+      "main": [
+        [
+          {
+            "node": "Call API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call API": {
+      "main": [
+        [
+          {
+            "node": "Got 401?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Got 401?": {
+      "main": [
+        [
+          {
+            "node": "Get Replacement Token",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Get Replacement Token": {
+      "main": [
+        [
+          {
+            "node": "Retry API Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {}
+}

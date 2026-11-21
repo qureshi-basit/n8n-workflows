@@ -1,0 +1,731 @@
+{
+  "name": "Postgres Job Queue with Retries and Dead Letter Table",
+  "nodes": [
+    {
+      "id": "x5-1",
+      "name": "Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -820,
+        -140
+      ],
+      "parameters": {
+        "content": "## Postgres job queue with dead letters\n\n### How it works\n1. Every minute **Release Stuck Jobs** requeues jobs whose lease ran out, or dead-letters them when out of attempts.\n2. **Claim Job Batch** takes up to `batch_size` due jobs with `FOR UPDATE SKIP LOCKED`, so overlapping runs never share a job.\n3. **Do the Work** POSTs `{job_id, job_type, attempt, payload}` to `worker_url` (5 minute timeout). A 2xx answer marks the job `done`.\n4. A failure retries after `retry_base_seconds` x 2^(attempt-1), at most `retry_max_seconds`; after `max_attempts` it is dead-lettered.\n5. Up to 200 new dead letters per run are emailed as one digest, then marked reported. A failed email fails the run and is resent next run; if marking fails, the next digest repeats them.\n\n### Setup\n1. Add a Postgres 13+ credential (user needs CREATE) to the Postgres nodes and run **Run Once to Create Tables**.\n2. Add an SMTP credential to **Email Dead Letter Digest**.\n3. In **Queue Settings** set `queue_table`, `dead_letter_table`, `worker_url`, `batch_size`, `max_attempts`, `retry_base_seconds`, `retry_max_seconds`, `lease_minutes`, `digest_to` and `digest_from` (a sender your SMTP allows).\n4. Enqueue: `INSERT INTO job_queue (job_type, payload) VALUES ('invoice', '{\"id\": 42}');`\n5. Add auth to **Do the Work** if needed, then activate.\n\n### Customization\nSet `lease_minutes` above the time one whole batch takes (batch_size x longest job if your steps run items one at a time). A job still running when its lease ends runs again; the old run's late result is ignored. If a result save fails, the run stops and those jobs rerun after the lease (all of the batch when **Mark Job Done** fails), or are dead-lettered on their last attempt. Make the work safe to repeat.",
+        "width": 600,
+        "height": 1160
+      }
+    },
+    {
+      "id": "x5-2",
+      "name": "Settings Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -180,
+        -140
+      ],
+      "parameters": {
+        "content": "## Settings and tables\nEvery value you change is in Queue Settings and is checked before any SQL runs. Done jobs stay in the queue table; clean up with `DELETE FROM job_queue WHERE status = 'done' AND finished_at < now() - interval '30 days';`",
+        "width": 1000,
+        "height": 780,
+        "color": 7
+      }
+    },
+    {
+      "id": "x5-3",
+      "name": "Claim Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        860,
+        -140
+      ],
+      "parameters": {
+        "content": "## Release and claim\nExpired jobs return to the queue, or to the dead-letter table when out of attempts. Then a batch of due jobs is claimed with SKIP LOCKED and fresh claim tokens. If nothing is due the branch stops; if Postgres is down the run fails.",
+        "width": 620,
+        "height": 440,
+        "color": 7
+      }
+    },
+    {
+      "id": "x5-4",
+      "name": "Work Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1500,
+        -140
+      ],
+      "parameters": {
+        "content": "## Do the work and record it\nTo replace Do the Work: keep item pairing to Claim Job Batch, output exactly one item per job, wire every node's error output to Schedule Retry or Dead-Letter, and put the error text in `error`, `error.message` or `message`.",
+        "width": 860,
+        "height": 440,
+        "color": 7
+      }
+    },
+    {
+      "id": "x5-5",
+      "name": "Digest Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        860,
+        340
+      ],
+      "parameters": {
+        "content": "## Dead letter digest\nUnreported dead letters are emailed as one digest, then marked reported. To run one again: `INSERT INTO job_queue (job_type, payload) SELECT job_type, payload FROM job_dead_letter WHERE id = 1;`",
+        "width": 1500,
+        "height": 300,
+        "color": 7
+      }
+    },
+    {
+      "id": "x5-6",
+      "name": "Every Minute",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -120,
+        80
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "x5-7",
+      "name": "Run Once to Create Tables",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -120,
+        300
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "x5-8",
+      "name": "Queue Settings",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        100,
+        180
+      ],
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "s1",
+              "name": "queue_table",
+              "type": "string",
+              "value": "job_queue"
+            },
+            {
+              "id": "s2",
+              "name": "dead_letter_table",
+              "type": "string",
+              "value": "job_dead_letter"
+            },
+            {
+              "id": "s3",
+              "name": "worker_url",
+              "type": "string",
+              "value": "https://example.com/run-job"
+            },
+            {
+              "id": "s4",
+              "name": "batch_size",
+              "type": "number",
+              "value": 10
+            },
+            {
+              "id": "s5",
+              "name": "max_attempts",
+              "type": "number",
+              "value": 5
+            },
+            {
+              "id": "s6",
+              "name": "retry_base_seconds",
+              "type": "number",
+              "value": 60
+            },
+            {
+              "id": "s7",
+              "name": "retry_max_seconds",
+              "type": "number",
+              "value": 3600
+            },
+            {
+              "id": "s8",
+              "name": "lease_minutes",
+              "type": "number",
+              "value": 10
+            },
+            {
+              "id": "s9",
+              "name": "digest_to",
+              "type": "string",
+              "value": "ops@example.com"
+            },
+            {
+              "id": "s10",
+              "name": "digest_from",
+              "type": "string",
+              "value": "n8n@example.com"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "x5-9",
+      "name": "Check Settings",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        320,
+        180
+      ],
+      "parameters": {
+        "jsCode": "// Validate Queue Settings before any SQL uses them (table names go into the SQL text).\nconst s = $input.first().json;\nconst problems = [];\nconst ident = /^[a-z_][a-z0-9_]{0,50}$/;\nfor (const k of ['queue_table', 'dead_letter_table']) if (!ident.test(String(s[k] ?? '').trim())) problems.push(k + ' must be a lowercase table name (letters, digits, _)');\nif (String(s.queue_table).trim() === String(s.dead_letter_table).trim()) problems.push('queue_table and dead_letter_table must differ');\nconst int = (k, min, max) => { const v = Number(s[k]); if (!Number.isInteger(v) || v < min || v > max) problems.push(k + ' must be a whole number from ' + min + ' to ' + max); };\nint('batch_size', 1, 100); int('max_attempts', 1, 50); int('retry_base_seconds', 1, 86400); int('retry_max_seconds', 1, 604800); int('lease_minutes', 1, 1440);\nif (Number(s.retry_max_seconds) < Number(s.retry_base_seconds)) problems.push('retry_max_seconds must be at least retry_base_seconds');\nif (!/^https?:\\/\\/\\S+$/.test(String(s.worker_url ?? '').trim())) problems.push('worker_url must start with http:// or https://');\nconst email = /^[^\\s@<>]+@[^\\s@<>]+\\.[^\\s@<>]+$/;\nfor (const a of String(s.digest_to ?? '').split(',')) if (!email.test(a.trim())) problems.push('digest_to has an invalid address: \"' + a.trim() + '\"');\nconst from = String(s.digest_from ?? '').trim(); const fromAddr = (from.match(/<([^>]+)>$/) || [null, from])[1];\nif (!email.test(fromAddr)) problems.push('digest_from must be an email address');\nreturn [{ json: { ok: problems.length === 0, problems } }];"
+      }
+    },
+    {
+      "id": "x5-10",
+      "name": "Settings Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        520,
+        180
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "x5-11",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "x5-12",
+      "name": "Stop: Invalid Settings",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        720,
+        420
+      ],
+      "parameters": {
+        "errorType": "errorMessage",
+        "errorMessage": "=Queue Settings are invalid: {{ $json.problems.join('; ') }}"
+      }
+    },
+    {
+      "id": "x5-13",
+      "name": "Create Tables Run?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        720,
+        160
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "x5-14",
+              "leftValue": "={{ $('Run Once to Create Tables').isExecuted }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "x5-15",
+      "name": "Create Queue Tables",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        720,
+        -40
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "CREATE TABLE IF NOT EXISTS {{ $('Queue Settings').first().json.queue_table }} (\n  id bigserial PRIMARY KEY,\n  job_type text NOT NULL DEFAULT 'default',\n  payload jsonb NOT NULL DEFAULT '{}'::jsonb,\n  status text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'processing', 'done')),\n  attempts integer NOT NULL DEFAULT 0,\n  run_after timestamptz NOT NULL DEFAULT now(),\n  locked_until timestamptz,\n  claim_token uuid,\n  last_error text,\n  created_at timestamptz NOT NULL DEFAULT now(),\n  updated_at timestamptz NOT NULL DEFAULT now(),\n  finished_at timestamptz\n);\nCREATE INDEX IF NOT EXISTS {{ $('Queue Settings').first().json.queue_table }}_due_idx ON {{ $('Queue Settings').first().json.queue_table }} (status, run_after);\nCREATE TABLE IF NOT EXISTS {{ $('Queue Settings').first().json.dead_letter_table }} (\n  id bigserial PRIMARY KEY,\n  job_id bigint NOT NULL,\n  job_type text NOT NULL,\n  payload jsonb NOT NULL,\n  attempts integer NOT NULL,\n  last_error text,\n  job_created_at timestamptz NOT NULL,\n  dead_at timestamptz NOT NULL DEFAULT now(),\n  reported_at timestamptz\n);\nSELECT 'tables ready' AS result;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "x5-16",
+      "name": "Release Stuck Jobs",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        940,
+        60
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH stuck AS (\n  SELECT id FROM {{ $('Queue Settings').first().json.queue_table }} WHERE status = 'processing' AND locked_until < now() FOR UPDATE SKIP LOCKED\n), dead AS (\n  INSERT INTO {{ $('Queue Settings').first().json.dead_letter_table }} (job_id, job_type, payload, attempts, last_error, job_created_at)\n  SELECT id, job_type, payload, attempts, 'Lease ran out before this attempt recorded a result', created_at\n  FROM {{ $('Queue Settings').first().json.queue_table }} WHERE id IN (SELECT id FROM stuck) AND attempts >= $1::int\n  RETURNING job_id\n), removed AS (\n  DELETE FROM {{ $('Queue Settings').first().json.queue_table }} WHERE id IN (SELECT job_id FROM dead) RETURNING id\n), released AS (\n  UPDATE {{ $('Queue Settings').first().json.queue_table }} SET status = 'queued', claim_token = NULL, locked_until = NULL, run_after = now(), updated_at = now(),\n    last_error = 'Lease ran out before this attempt recorded a result'\n  WHERE id IN (SELECT id FROM stuck) AND attempts < $1::int\n  RETURNING id\n)\nSELECT (SELECT count(*) FROM released)::int AS released, (SELECT count(*) FROM removed)::int AS dead_lettered;",
+        "options": {
+          "queryReplacement": "={{ [ $('Queue Settings').first().json.max_attempts ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "x5-17",
+      "name": "Claim Job Batch",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1160,
+        60
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH due AS (\n  SELECT id FROM {{ $('Queue Settings').first().json.queue_table }}\n  WHERE status = 'queued' AND run_after <= now()\n  ORDER BY run_after, id\n  FOR UPDATE SKIP LOCKED\n  LIMIT $1::int\n)\nUPDATE {{ $('Queue Settings').first().json.queue_table }} AS j\nSET status = 'processing', attempts = j.attempts + 1, claim_token = gen_random_uuid(),\n    locked_until = now() + make_interval(mins => $2::int), updated_at = now()\nFROM due WHERE j.id = due.id\nRETURNING j.id, j.job_type, j.payload, j.attempts, j.claim_token::text AS claim_token;",
+        "options": {
+          "queryReplacement": "={{ [ $('Queue Settings').first().json.batch_size, $('Queue Settings').first().json.lease_minutes ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "x5-18",
+      "name": "Job Claimed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1340,
+        60
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "x5-19",
+              "leftValue": "={{ !!$json.claim_token }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "x5-20",
+      "name": "Do the Work",
+      "notes": "Placeholder: replace with the steps that do your job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "onError": "continueErrorOutput",
+      "position": [
+        1540,
+        60
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Queue Settings').first().json.worker_url }}",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ job_id: $json.id, job_type: $json.job_type, attempt: $json.attempts, payload: $json.payload }) }}",
+        "options": {
+          "timeout": 300000
+        }
+      }
+    },
+    {
+      "id": "x5-21",
+      "name": "Mark Job Done",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1820,
+        -20
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE {{ $('Queue Settings').first().json.queue_table }} SET status = 'done', claim_token = NULL, locked_until = NULL, last_error = NULL, finished_at = now(), updated_at = now()\nWHERE id = $1::bigint AND claim_token = $2::uuid\nRETURNING id AS job_id, status;",
+        "options": {
+          "queryReplacement": "={{ [ $('Claim Job Batch').item.json.id, $('Claim Job Batch').item.json.claim_token ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "x5-22",
+      "name": "Schedule Retry or Dead-Letter",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1820,
+        160
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH job AS (\n  SELECT * FROM {{ $('Queue Settings').first().json.queue_table }} WHERE id = $1::bigint AND claim_token = $2::uuid FOR UPDATE\n), dead AS (\n  INSERT INTO {{ $('Queue Settings').first().json.dead_letter_table }} (job_id, job_type, payload, attempts, last_error, job_created_at)\n  SELECT id, job_type, payload, attempts, $3, created_at FROM job WHERE attempts >= $4::int\n  RETURNING job_id\n), removed AS (\n  DELETE FROM {{ $('Queue Settings').first().json.queue_table }} WHERE id IN (SELECT job_id FROM dead) RETURNING id\n), retry AS (\n  UPDATE {{ $('Queue Settings').first().json.queue_table }} AS q SET status = 'queued', claim_token = NULL, locked_until = NULL, last_error = $3, updated_at = now(),\n    run_after = now() + make_interval(secs => LEAST($5::double precision * power(2, q.attempts - 1), $6::double precision))\n  FROM job WHERE q.id = job.id AND job.attempts < $4::int\n  RETURNING q.id, q.run_after\n)\nSELECT $1::bigint AS job_id, (SELECT count(*) FROM removed)::int AS dead_lettered, (SELECT run_after FROM retry) AS next_try_at;",
+        "options": {
+          "queryReplacement": "={{ [ $('Claim Job Batch').item.json.id, $('Claim Job Batch').item.json.claim_token, String((typeof $json.error === 'string' && $json.error) || ($json.error && ($json.error.message || $json.error.description)) || $json.message || 'Unknown error').concat(($json.error && $json.error.message && $json.error.description) ? ': ' + $json.error.description : '').slice(0, 1000), $('Queue Settings').first().json.max_attempts, $('Queue Settings').first().json.retry_base_seconds, $('Queue Settings').first().json.retry_max_seconds ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "x5-23",
+      "name": "Find Unreported Dead Letters",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        940,
+        460
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, job_id, job_type, payload::text AS payload, attempts, last_error, dead_at FROM {{ $('Queue Settings').first().json.dead_letter_table }}\nWHERE reported_at IS NULL ORDER BY id LIMIT 200;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "x5-24",
+      "name": "Build Digest Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1180,
+        460
+      ],
+      "parameters": {
+        "jsCode": "// One digest email for all dead letters not reported yet. Every value is HTML-escaped.\nconst esc = (v) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;').replace(/'/g, '&#39;');\nconst rows = $input.all().map((i) => i.json);\nconst tr = rows.map((r) => '<tr><td>' + esc(r.job_id) + '</td><td>' + esc(r.job_type) + '</td><td>' + esc(r.attempts) + '</td><td>' + esc(r.last_error) + '</td><td><code>' + esc(String(r.payload).slice(0, 300)) + '</code></td></tr>').join('');\nconst html = '<p>' + rows.length + ' job(s) used all their attempts and were moved to the dead-letter table <b>' + esc($('Queue Settings').first().json.dead_letter_table) + '</b>.</p>'\n  + '<table border=\"1\" cellpadding=\"4\" cellspacing=\"0\"><tr><th>Job id</th><th>Type</th><th>Attempts</th><th>Last error</th><th>Payload</th></tr>' + tr + '</table>';\nreturn [{ json: { ids: rows.map((r) => Number(r.id)), count: rows.length, subject: rows.length + ' job(s) moved to the dead-letter table', html } }];"
+      }
+    },
+    {
+      "id": "x5-25",
+      "name": "Email Dead Letter Digest",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "onError": "continueErrorOutput",
+      "position": [
+        1420,
+        460
+      ],
+      "parameters": {
+        "fromEmail": "={{ $('Queue Settings').first().json.digest_from }}",
+        "toEmail": "={{ $('Queue Settings').first().json.digest_to }}",
+        "subject": "={{ $json.subject }}",
+        "emailFormat": "html",
+        "html": "={{ $json.html }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "smtp": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "x5-26",
+      "name": "Mark Dead Letters Reported",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1680,
+        420
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE {{ $('Queue Settings').first().json.dead_letter_table }} SET reported_at = now() WHERE id = ANY($1::bigint[]) RETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [ '{' + $('Build Digest Email').first().json.ids.join(',') + '}' ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "x5-27",
+      "name": "Stop: Digest Email Failed",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        1680,
+        540
+      ],
+      "parameters": {
+        "errorType": "errorMessage",
+        "errorMessage": "=The dead letter digest email failed and will be retried next run ({{ $('Build Digest Email').first().json.count }} job(s) still unreported): {{ ($json.error && ($json.error.message || $json.error)) || $json.message || 'unknown error' }}"
+      }
+    }
+  ],
+  "connections": {
+    "Every Minute": {
+      "main": [
+        [
+          {
+            "node": "Queue Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Once to Create Tables": {
+      "main": [
+        [
+          {
+            "node": "Queue Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Queue Settings": {
+      "main": [
+        [
+          {
+            "node": "Check Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Settings": {
+      "main": [
+        [
+          {
+            "node": "Settings Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Settings Valid?": {
+      "main": [
+        [
+          {
+            "node": "Create Tables Run?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stop: Invalid Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Tables Run?": {
+      "main": [
+        [
+          {
+            "node": "Create Queue Tables",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Release Stuck Jobs",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Find Unreported Dead Letters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Release Stuck Jobs": {
+      "main": [
+        [
+          {
+            "node": "Claim Job Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Job Batch": {
+      "main": [
+        [
+          {
+            "node": "Job Claimed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Job Claimed?": {
+      "main": [
+        [
+          {
+            "node": "Do the Work",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Do the Work": {
+      "main": [
+        [
+          {
+            "node": "Mark Job Done",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Schedule Retry or Dead-Letter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Unreported Dead Letters": {
+      "main": [
+        [
+          {
+            "node": "Build Digest Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Digest Email": {
+      "main": [
+        [
+          {
+            "node": "Email Dead Letter Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Dead Letter Digest": {
+      "main": [
+        [
+          {
+            "node": "Mark Dead Letters Reported",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stop: Digest Email Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {}
+}

@@ -22,6 +22,7 @@ Workflows published on [basitq.cloud/workflows](https://basitq.cloud/workflows).
 | [Cal.com Webhook Bookings to Data Table with Email Reminders](workflows/cal-com-webhook-bookings-to-data-table-with-email-reminders.json) | [basitq.cloud](https://basitq.cloud/workflows/cal-com-webhook-bookings-to-data-table-with-email-reminders) |
 | [HTTP Request Access Token Auto Refresh with Data Tables](workflows/http-request-access-token-auto-refresh-with-data-tables.json) | [basitq.cloud](https://basitq.cloud/workflows/http-request-access-token-auto-refresh-with-data-tables) |
 | [n8n Form Quote Request to Emailed PDF with Gotenberg](workflows/n8n-form-quote-request-to-emailed-pdf-with-gotenberg.json) | [basitq.cloud](https://basitq.cloud/workflows/n8n-form-quote-request-to-emailed-pdf-with-gotenberg) |
+| [Postgres Job Queue with Retries and Dead Letter Table](workflows/postgres-job-queue-with-retries-and-dead-letter-table.json) | [basitq.cloud](https://basitq.cloud/workflows/postgres-job-queue-with-retries-and-dead-letter-table) |
 
 ## Use one
 

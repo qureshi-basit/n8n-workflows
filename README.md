@@ -23,6 +23,7 @@ Workflows published on [basitq.cloud/workflows](https://basitq.cloud/workflows).
 | [HTTP Request Access Token Auto Refresh with Data Tables](workflows/http-request-access-token-auto-refresh-with-data-tables.json) | [basitq.cloud](https://basitq.cloud/workflows/http-request-access-token-auto-refresh-with-data-tables) |
 | [n8n Form Quote Request to Emailed PDF with Gotenberg](workflows/n8n-form-quote-request-to-emailed-pdf-with-gotenberg.json) | [basitq.cloud](https://basitq.cloud/workflows/n8n-form-quote-request-to-emailed-pdf-with-gotenberg) |
 | [Postgres Job Queue with Retries and Dead Letter Table](workflows/postgres-job-queue-with-retries-and-dead-letter-table.json) | [basitq.cloud](https://basitq.cloud/workflows/postgres-job-queue-with-retries-and-dead-letter-table) |
+| [n8n Fill Excel Template Cells and Keep Formatting](workflows/n8n-fill-excel-template-cells-and-keep-formatting.json) | [basitq.cloud](https://basitq.cloud/workflows/n8n-fill-excel-template-cells-and-keep-formatting) |
 
 ## Use one
 

@@ -1,0 +1,475 @@
+{
+  "name": "n8n Fill Excel Template Cells and Keep Formatting",
+  "nodes": [
+    {
+      "id": "701268e0-ad2a-026e-d7a4-e718b8d37471",
+      "name": "Receive Template and Values",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "fill-excel-template",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "Your credential"
+        }
+      }
+    },
+    {
+      "id": "3df23e27-5660-3111-8e2e-adc1202b6b47",
+      "name": "Fill Settings",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "onError": "continueErrorOutput",
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "0ad809f7-44aa-2c3d-1f93-9640995c45cd",
+              "name": "cell_map",
+              "type": "object",
+              "value": "{\n  \"company_name\": \"Application!B3\",\n  \"marital_status\": {\n    \"cell\": \"Application!B4\",\n    \"values\": {\n      \"Married\": \"M\",\n      \"Single\": \"S\"\n    }\n  },\n  \"employees\": \"Application!B5\",\n  \"vat_registered\": \"Application!B6\"\n}"
+            },
+            {
+              "id": "afe5b57d-9803-1a08-437e-f7d42c3a70f2",
+              "name": "max_file_mb",
+              "type": "number",
+              "value": 5
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "include": "selected",
+        "includeFields": "body",
+        "options": {
+          "stripBinary": false
+        }
+      }
+    },
+    {
+      "id": "5113dd89-5095-77bb-be8f-4030d332b888",
+      "name": "Check Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "onError": "continueErrorOutput",
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "jsCode": "// Checks the settings and the request before the workbook is opened.\nconst item = $input.first();\nconst { cell_map: map, max_file_mb: maxMb } = item.json;\nconst own = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);\nconst isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\nconst fail = (status, error, message, problems = []) =>\n  [{ json: { ok: false, status, response: { error, message, problems: problems.slice(0, 25) } } }];\n\nfunction parseAddress(text) {\n  if (typeof text !== 'string') return null;\n  const cut = text.lastIndexOf('!');\n  if (cut < 1) return null;\n  let sheet = text.slice(0, cut);\n  if (sheet.length > 2 && sheet.startsWith(\"'\") && sheet.endsWith(\"'\")) sheet = sheet.slice(1, -1).replace(/''/g, \"'\");\n  const m = /^\\$?([A-Z]{1,3})\\$?([1-9][0-9]{0,6})$/.exec(text.slice(cut + 1).toUpperCase());\n  if (!m) return null;\n  let col = 0;\n  for (const ch of m[1]) col = col * 26 + ch.charCodeAt(0) - 64;\n  if (col > 16384 || +m[2] > 1048576) return null;\n  return { sheet, col, row: +m[2], cell: m[1] + m[2] };\n}\n\n// Settings\nif (!isObject(map) || !Object.keys(map).length) return fail(500, 'invalid_settings', 'cell_map in Fill Settings must be a JSON object with at least one field.');\nif (typeof maxMb !== 'number' || !(maxMb > 0 && maxMb <= 50)) return fail(500, 'invalid_settings', 'max_file_mb in Fill Settings must be a number above 0 and at most 50.');\nconst targets = new Map();\nconst usedCells = new Map();\nconst settingProblems = [];\nfor (const [field, rule] of Object.entries(map)) {\n  const address = typeof rule === 'string' ? rule : rule?.cell;\n  const at = parseAddress(address);\n  if (!at) { settingProblems.push({ field, cell: String(address ?? ''), reason: 'Bad cell address. Use Sheet!B3.' }); continue; }\n  if (isObject(rule) && Object.keys(rule).some((k) => k !== 'cell' && k !== 'values')) { settingProblems.push({ field, cell: address, reason: 'Use only \"cell\" and \"values\" in a mapping.' }); continue; }\n  if (isObject(rule) && own(rule, 'values') && !isObject(rule.values)) { settingProblems.push({ field, cell: address, reason: '\"values\" must be a JSON object.' }); continue; }\n  const key = JSON.stringify([at.sheet.toLowerCase(), at.cell]);\n  if (usedCells.has(key)) { settingProblems.push({ field, cell: address, reason: `Same cell as field \"${usedCells.get(key)}\".` }); continue; }\n  usedCells.set(key, field);\n  targets.set(field, { ...at, address, lookup: isObject(rule) && own(rule, 'values') ? rule.values : null });\n}\nif (settingProblems.length) return fail(500, 'invalid_settings', 'cell_map in Fill Settings is invalid.', settingProblems);\n\n// Uploaded file\nconst files = Object.keys(item.binary || {});\nif (files.length !== 1 || files[0] !== 'template') return fail(400, 'invalid_request', 'Send multipart/form-data with exactly one file, in a field named \"template\".');\nconst file = await this.helpers.getBinaryDataBuffer(0, 'template');\nif (!file.length) return fail(400, 'empty_file', 'The template file is empty.');\nif (file.length > maxMb * 1024 * 1024) return fail(413, 'file_too_large', `The template is larger than ${maxMb} MB.`);\nif (file.subarray(0, 8).toString('hex') === 'd0cf11e0a1b11ae1') {\n  return file.includes(Buffer.from('EncryptedPackage', 'utf16le'))\n    ? fail(415, 'encrypted_workbook', 'Password-encrypted workbooks are not supported. Save a copy without a password.')\n    : fail(415, 'old_excel_format', 'Old .xls files are not supported. Save the template as .xlsx or .xlsm.');\n}\nif (file.subarray(0, 4).toString('hex') !== '504b0304') return fail(415, 'not_a_workbook', 'The file is not an .xlsx or .xlsm workbook.');\n\n// Values\nconst text = item.json.body?.values;\nlet values;\ntry { values = typeof text === 'string' ? JSON.parse(text) : null; } catch (e) { values = null; }\nif (!isObject(values) || !Object.keys(values).length) return fail(400, 'invalid_values', 'Send a text field named \"values\" holding a JSON object with at least one field.');\n\nconst problems = [];\nconst writes = [];\nfor (const [field, given] of Object.entries(values)) {\n  if (!targets.has(field)) { problems.push({ field, reason: 'Unknown field: it is not in cell_map.' }); continue; }\n  const { lookup, ...at } = targets.get(field);\n  const problem = (reason) => problems.push({ field, cell: at.address, reason });\n  if (given !== null && !['string', 'number', 'boolean'].includes(typeof given)) { problem('Use text, a number, true, false or null.'); continue; }\n  let value = given === null ? '' : given;\n  if (lookup && value !== '') {\n    if (!own(lookup, String(value))) { problem('The value is not listed under \"values\" for this field.'); continue; }\n    value = lookup[String(value)];\n    if (value === null) value = '';\n  }\n  let type;\n  if (value === '') type = 'clear';\n  else if (typeof value === 'boolean') type = 'boolean';\n  else if (typeof value === 'number') {\n    const size = Math.abs(value);\n    if (!Number.isFinite(value) || size > 9.99999999999999e307 || (size && size < 2.2250738585072e-308)) { problem('The number is outside the range Excel supports.'); continue; }\n    if (Number.isInteger(value) && size >= 1e15) { problem('Whole numbers over 15 digits lose digits in Excel. Send them as text.'); continue; }\n    type = 'number';\n  } else if (typeof value === 'string') {\n    value = value.replace(/\\r\\n?/g, '\\n');\n    if (/[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F￾￿]|\\p{Surrogate}/u.test(value)) { problem('The text contains a character that Excel files cannot store.'); continue; }\n    if (value.length > 32767) { problem('The text is longer than 32,767 characters.'); continue; }\n    if (value.split('\\n').length > 254) { problem('The text has more than 253 line breaks.'); continue; }\n    type = 'text';\n  } else { problem('\"values\" may only map to text, a number, true, false or null.'); continue; }\n  writes.push({ field, ...at, type, value });\n}\nif (problems.length) return fail(422, 'invalid_values', 'Nothing was filled. Fix every problem and send again.', problems);\n\nconst base = String(item.binary.template.fileName || '').split(/[\\\\/]/).pop()\n  .replace(/\\.[^.]*$/, '').replace(/[^A-Za-z0-9 _-]/g, '_').trim().slice(0, 80) || 'template';\nreturn [{ json: { ok: true, writes, base }, binary: { archive: { ...item.binary.template, fileExtension: 'zip' } } }];"
+      }
+    },
+    {
+      "id": "fceb8ca9-5cb0-e132-9012-2a59480a4341",
+      "name": "Request Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        660,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "ok",
+              "leftValue": "={{ $json.ok === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "c2e30265-1a57-1c8d-d707-bdc8f64044ca",
+      "name": "Unpack Workbook",
+      "type": "n8n-nodes-base.compression",
+      "typeVersion": 1.1,
+      "onError": "continueRegularOutput",
+      "position": [
+        940,
+        0
+      ],
+      "parameters": {
+        "operation": "decompress",
+        "binaryPropertyName": "archive",
+        "outputPrefix": "part_"
+      }
+    },
+    {
+      "id": "6e70ea21-c6d1-f38d-75f8-a9a9e5a72a52",
+      "name": "Fill Mapped Cells",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "onError": "continueErrorOutput",
+      "position": [
+        1160,
+        0
+      ],
+      "parameters": {
+        "jsCode": "// Edits only the mapped cells. Returns every archive part with its full path restored for the ZIP node.\nconst item = $input.first();\nconst { writes, base } = $('Check Request').first().json;\nconst fail = (status, error, message, problems = []) =>\n  [{ json: { ok: false, status, response: { error, message, problems: problems.slice(0, 25) } } }];\nif (item.json.error) return fail(422, 'cannot_unpack', 'The workbook could not be unpacked. It may be damaged.');\n\nconst MAIN = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';\nconst STRICT = 'http://purl.oclc.org/ooxml/spreadsheetml/main';\nconst REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';\nconst CT = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml';\nconst CT_MACRO = 'application/vnd.ms-excel.sheet.macroEnabled.main+xml';\n\nclass Refusal extends Error {}\nconst refuse = (status, code, message) => { throw Object.assign(new Refusal(message), { status, code }); };\nconst broken = () => refuse(422, 'invalid_workbook', 'The workbook structure is damaged or not supported.');\n\n// Small XML reader. It records offsets so edits are spliced in and all other text stays as it was.\nconst ENTITY = { amp: '&', lt: '<', gt: '>', quot: '\"', apos: \"'\" };\nconst decode = (s = '') => s.replace(/&(#x([0-9a-fA-F]+)|#([0-9]+)|amp|lt|gt|quot|apos);/g, (all, e, hex, dec) => {\n  if (!hex && !dec) return ENTITY[e];\n  const n = hex ? parseInt(hex, 16) : +dec;\n  return n <= 0x10ffff ? String.fromCodePoint(n) : all;\n});\nfunction parseXml(src, onOpen) {\n  const top = { children: [], nsmap: new Map(), ns: '', local: '' };\n  const stack = [top];\n  let i = 0;\n  while ((i = src.indexOf('<', i)) >= 0) {\n    const skip = src.startsWith('<!--', i) ? '-->' : src.startsWith('<![CDATA[', i) ? ']]>' : src.startsWith('<?', i) ? '?>' : null;\n    if (skip) { const end = src.indexOf(skip, i + 2); if (end < 0) broken(); i = end + skip.length; continue; }\n    if (src.startsWith('<!', i)) refuse(422, 'invalid_workbook', 'XML document type declarations are not supported.');\n    if (src[i + 1] === '/') {\n      const end = src.indexOf('>', i);\n      if (end < 0 || stack.length < 2) broken();\n      const el = stack.pop();\n      if (el.name !== src.slice(i + 2, end).trim()) broken();\n      el.closeStart = i; el.end = i = end + 1;\n      continue;\n    }\n    const scan = /[>\"']/g;\n    scan.lastIndex = i + 1;\n    let hit;\n    while ((hit = scan.exec(src)) && hit[0] !== '>') {\n      const quote = src.indexOf(hit[0], scan.lastIndex);\n      if (quote < 0) broken();\n      scan.lastIndex = quote + 1;\n    }\n    if (!hit) broken();\n    const openEnd = hit.index + 1;\n    const selfClosed = src[hit.index - 1] === '/';\n    const body = src.slice(i + 1, selfClosed ? hit.index - 1 : hit.index);\n    const name = /^[^\\s\\/>]+/.exec(body)?.[0];\n    if (!name) broken();\n    const attrs = new Map();\n    const re = /([^\\s=\\/]+)\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')/g;\n    re.lastIndex = name.length;\n    let a;\n    while ((a = re.exec(body))) attrs.set(a[1], a[2] ?? a[3]);\n    const parent = stack[stack.length - 1];\n    let nsmap = parent.nsmap;\n    for (const [key, v] of attrs) {\n      if (key === 'xmlns' || key.startsWith('xmlns:')) {\n        if (nsmap === parent.nsmap) nsmap = new Map(nsmap);\n        nsmap.set(key.slice(6), decode(v));\n      }\n    }\n    const colon = name.indexOf(':');\n    const prefix = colon < 0 ? '' : name.slice(0, colon);\n    const el = { name, prefix: prefix && prefix + ':', local: name.slice(colon + 1), ns: nsmap.get(prefix) || '', nsmap, attrs, parent, children: [], start: i, openEnd, selfClosed };\n    if (!onOpen || onOpen(el, parent) !== false) parent.children.push(el);\n    if (selfClosed) { el.closeStart = openEnd; el.end = openEnd; } else stack.push(el);\n    i = openEnd;\n  }\n  if (stack.length !== 1 || top.children.length !== 1) broken();\n  return top.children[0];\n}\nconst kid = (el, local) => el?.children.find((c) => c.local === local && c.ns === el.ns);\nconst kids = (el, local) => el?.children.filter((c) => c.local === local && c.ns === el.ns) || [];\nconst attr = (el, key) => (el?.attrs.has(key) ? decode(el.attrs.get(key)) : undefined);\nconst isOn = (v) => ['1', 'true', 'on'].includes(v);\n\nconst colName = (n) => (n ? colName(Math.floor((n - 1) / 26)) + String.fromCharCode(65 + ((n - 1) % 26)) : '');\nfunction position(ref) {\n  const m = /^([A-Z]{1,3})([0-9]+)$/.exec(String(ref).replace(/\\$/g, '').toUpperCase());\n  if (!m) broken();\n  let col = 0;\n  for (const ch of m[1]) col = col * 26 + ch.charCodeAt(0) - 64;\n  return { col, row: +m[2] };\n}\nfunction area(ref) {\n  const [a, b = a] = String(ref).split(':');\n  return { from: position(a), to: position(b) };\n}\nconst inside = (p, a) => p.row >= a.from.row && p.row <= a.to.row && p.col >= a.from.col && p.col <= a.to.col;\n\n// Archive parts. The unzip node splits each path into directory and fileName.\nconst parts = new Map();\nconst binary = {};\nfor (const [key, meta] of Object.entries(item.binary || {})) {\n  const path = meta.directory ? `${meta.directory}/${meta.fileName}` : String(meta.fileName);\n  if (path === '__proto__' || path.includes('\\\\') || path.split('/').some((s) => ['', '.', '..'].includes(s)) || parts.has(path.toLowerCase())) {\n    return fail(422, 'invalid_workbook', 'The workbook contains an unsafe or duplicate part name.');\n  }\n  parts.set(path.toLowerCase(), { key, path });\n  binary[key] = { ...meta, fileName: path };\n}\nconst readPart = async (path) => {\n  const part = parts.get(path.toLowerCase());\n  if (!part) broken();\n  const bytes = await this.helpers.getBinaryDataBuffer(0, part.key);\n  const text = bytes.toString('utf8');\n  if (!Buffer.from(text, 'utf8').equals(bytes)) refuse(422, 'unsupported_encoding', 'Only workbooks with UTF-8 XML are supported.');\n  return text;\n};\nasync function readRels(owner) {\n  const cut = owner.lastIndexOf('/') + 1;\n  const dir = owner.slice(0, cut);\n  const path = `${dir}_rels/${owner.slice(cut)}.rels`;\n  if (!parts.has(path.toLowerCase())) return [];\n  return parseXml(await readPart(path)).children\n    .filter((r) => r.local === 'Relationship' && attr(r, 'TargetMode') !== 'External')\n    .map((r) => {\n      let target = attr(r, 'Target') || '';\n      try { target = decodeURIComponent(target); } catch (e) { broken(); }\n      const out = [];\n      for (const s of (target.startsWith('/') ? target : dir + target).split('/')) {\n        if (s === '..') out.pop(); else if (s && s !== '.') out.push(s);\n      }\n      return { id: attr(r, 'Id'), type: String(attr(r, 'Type')).split('/').pop(), path: out.join('/') };\n    });\n}\n\ntry {\n  if (!parts.has('[content_types].xml') || !parts.has('_rels/.rels')) refuse(415, 'not_a_workbook', 'The file is not an .xlsx or .xlsm workbook.');\n  const bookPath = (await readRels('')).find((r) => r.type === 'officeDocument')?.path;\n  if (!bookPath) refuse(415, 'not_a_workbook', 'The file is not an .xlsx or .xlsm workbook.');\n  const bookText = await readPart(bookPath);\n  const book = parseXml(bookText);\n  if (book.ns === STRICT) refuse(415, 'unsupported_workbook', 'Strict Open XML is not supported. Save as a normal Excel Workbook.');\n  const types = parseXml(await readPart('[Content_Types].xml')).children;\n  const bookType = attr(types.find((t) => t.local === 'Override' && String(attr(t, 'PartName')).toLowerCase() === `/${bookPath}`.toLowerCase())\n    ?? types.find((t) => t.local === 'Default' && String(attr(t, 'Extension')).toLowerCase() === bookPath.split('.').pop().toLowerCase()), 'ContentType');\n  if (bookType !== CT && bookType !== CT_MACRO) refuse(415, 'unsupported_workbook', 'Only .xlsx and .xlsm workbooks are supported, not other Office file types.');\n  if (book.local !== 'workbook' || book.ns !== MAIN || !kid(book, 'sheets')) broken();\n\n  const bookRels = await readRels(bookPath);\n  const sheets = new Map();\n  for (const sheet of kids(kid(book, 'sheets'), 'sheet')) {\n    const idKey = [...sheet.attrs.keys()].find((k) => k.endsWith(':id') && sheet.nsmap.get(k.slice(0, -3)) === REL);\n    sheets.set(String(attr(sheet, 'name')).toLowerCase(), bookRels.find((r) => r.id === attr(sheet, idKey)));\n  }\n\n  const problems = [];\n  const bySheet = new Map();\n  for (const w of writes) {\n    const problem = (reason) => problems.push({ field: w.field, cell: w.address, reason });\n    const rel = sheets.get(w.sheet.toLowerCase());\n    if (!rel) { problem('Sheet not found.'); continue; }\n    if (rel.type !== 'worksheet') { problem('This sheet is not a worksheet.'); continue; }\n    if (!bySheet.has(rel.path)) bySheet.set(rel.path, []);\n    bySheet.get(rel.path).push(w);\n  }\n\n  let lockedStyles;\n  const changed = new Map();\n  for (const [sheetPath, cells] of bySheet) {\n    const src = await readPart(sheetPath);\n    const wantedRows = new Set(cells.map((c) => c.row));\n    const formulaAreas = [];\n    let lastRow = 0;\n    const root = parseXml(src, (el, parent) => {\n      if (el.ns !== MAIN) return;\n      if (el.local === 'row' && parent.local === 'sheetData') {\n        el.num = lastRow = el.attrs.has('r') ? +el.attrs.get('r') : lastRow + 1;\n        el.lastCol = 0;\n        el.wanted = wantedRows.has(el.num);\n      } else if (el.local === 'c' && parent.local === 'row') {\n        if (!parent.wanted) return false;\n        el.col = parent.lastCol = el.attrs.has('r') ? position(el.attrs.get('r')).col : parent.lastCol + 1;\n      } else if (el.local === 'f' && parent.local === 'c') {\n        if (el.attrs.has('ref') && ['array', 'dataTable'].includes(el.attrs.get('t'))) formulaAreas.push(area(el.attrs.get('ref')));\n      }\n    });\n    const data = kid(root, 'sheetData');\n    if (root.local !== 'worksheet' || root.ns !== MAIN || !data) broken();\n\n    const merges = kids(kid(root, 'mergeCells'), 'mergeCell').map((m) => area(attr(m, 'ref')));\n    const tables = [];\n    for (const rel of (await readRels(sheetPath)).filter((r) => r.type === 'table')) {\n      const t = parseXml(await readPart(rel.path));\n      tables.push({ ...area(attr(t, 'ref')), head: +(attr(t, 'headerRowCount') ?? 1), total: +(attr(t, 'totalsRowCount') ?? 0) });\n    }\n    const protectedSheet = isOn(attr(kid(root, 'sheetProtection'), 'sheet'));\n    if (protectedSheet && !lockedStyles) {\n      const path = bookRels.find((r) => r.type === 'styles')?.path;\n      lockedStyles = path ? kids(kid(parseXml(await readPart(path)), 'cellXfs'), 'xf')\n        .map((xf) => !['0', 'false', 'off'].includes(attr(kid(xf, 'protection'), 'locked'))) : [];\n    }\n    const rows = kids(data, 'row');\n    const columns = kids(kid(root, 'cols'), 'col');\n\n    for (const w of cells) {\n      const problem = (reason) => problems.push({ field: w.field, cell: w.address, reason });\n      w.rowEl = rows.find((r) => r.num === w.row);\n      w.el = kids(w.rowEl, 'c').find((c) => c.col === w.col);\n      if (w.el) w.style = attr(w.el, 's');\n      else if (w.rowEl && isOn(attr(w.rowEl, 'customFormat'))) w.style = attr(w.rowEl, 's');\n      else w.style = attr(columns.find((c) => +attr(c, 'min') <= w.col && w.col <= +attr(c, 'max')), 'style');\n      if (kid(w.el, 'f') || formulaAreas.some((a) => inside(w, a))) { problem('The cell holds or belongs to a formula.'); continue; }\n      const merge = merges.find((a) => inside(w, a));\n      if (merge && (merge.from.row !== w.row || merge.from.col !== w.col)) { problem(`Merged cell: use its top-left cell ${colName(merge.from.col)}${merge.from.row}.`); continue; }\n      const table = tables.find((a) => inside(w, a));\n      if (table && (w.row < table.from.row + table.head || w.row > table.to.row - table.total)) { problem('Table header and totals cells cannot be filled.'); continue; }\n      if (protectedSheet && lockedStyles[+(w.style ?? 0)] !== false) problem('The cell is locked on a protected sheet.');\n    }\n    if (problems.length) continue;\n\n    const styleAttr = (w) => (/^[0-9]+$/.test(w.style ?? '') && w.style !== '0' ? ` s=\"${w.style}\"` : '');\n    const makeCell = (w, p, head, rest = '') => {\n      if (w.type === 'clear') return rest ? `<${p}c${head}>${rest}</${p}c>` : `<${p}c${head}/>`;\n      if (w.type === 'number') return `<${p}c${head}><${p}v>${w.value}</${p}v>${rest}</${p}c>`;\n      if (w.type === 'boolean') return `<${p}c${head} t=\"b\"><${p}v>${w.value ? 1 : 0}</${p}v>${rest}</${p}c>`;\n      const safe = w.value.replace(/_(?=x[0-9A-Fa-f]{4}_)/g, '_x005F_').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n      return `<${p}c${head} t=\"inlineStr\"><${p}is><${p}t xml:space=\"preserve\">${safe}</${p}t></${p}is>${rest}</${p}c>`;\n    };\n    const newCell = (w, p) => makeCell(w, p, ` r=\"${w.cell}\"${styleAttr(w)}`);\n    const edits = [];\n    const add = (start, end, text) => edits.push({ start, end, text });\n\n    const ordered = [...cells].sort((a, b) => a.row - b.row || a.col - b.col);\n    for (const w of ordered.filter((c) => c.el)) {\n      let head = '';\n      for (const [key, v] of w.el.attrs) if (!['t', 'cm', 'vm'].includes(key)) head += ` ${key}=\"${v.replace(/\"/g, '&quot;')}\"`;\n      const rest = w.el.children.filter((c) => !(c.ns === MAIN && ['v', 'is'].includes(c.local))).map((c) => src.slice(c.start, c.end)).join('');\n      add(w.el.start, w.el.end, makeCell(w, w.el.prefix, head, rest));\n    }\n\n    const added = ordered.filter((c) => !c.el && c.type !== 'clear');\n    const gaps = new Map();\n    const atGap = (pos, text) => gaps.set(pos, (gaps.get(pos) || '') + text);\n    for (const row of new Set(added.filter((c) => c.rowEl).map((c) => c.rowEl))) {\n      const fresh = added.filter((c) => c.rowEl === row);\n      if (row.selfClosed) {\n        add(row.start, row.end, `${src.slice(row.start, row.openEnd).replace(/\\s*\\/>$/, '>')}${fresh.map((w) => newCell(w, row.prefix)).join('')}</${row.name}>`);\n      } else {\n        for (const w of fresh) atGap(kids(row, 'c').find((c) => c.col > w.col)?.start ?? row.closeStart, newCell(w, row.prefix));\n      }\n    }\n    const p = data.prefix;\n    let emptyData = '';\n    for (const num of new Set(added.filter((c) => !c.rowEl).map((c) => c.row))) {\n      const text = `<${p}row r=\"${num}\">${added.filter((c) => c.row === num).map((w) => newCell(w, p)).join('')}</${p}row>`;\n      if (data.selfClosed) emptyData += text;\n      else atGap(rows.find((r) => r.num > num)?.start ?? data.closeStart, text);\n    }\n    if (emptyData) add(data.start, data.end, `${src.slice(data.start, data.openEnd).replace(/\\s*\\/>$/, '>')}${emptyData}</${data.name}>`);\n    for (const [pos, text] of gaps) add(pos, pos, text);\n\n    const dim = kid(root, 'dimension');\n    if (dim && added.length) {\n      const d = area(attr(dim, 'ref'));\n      const r1 = Math.min(d.from.row, ...added.map((c) => c.row)), r2 = Math.max(d.to.row, ...added.map((c) => c.row));\n      const c1 = Math.min(d.from.col, ...added.map((c) => c.col)), c2 = Math.max(d.to.col, ...added.map((c) => c.col));\n      if (r1 !== d.from.row || r2 !== d.to.row || c1 !== d.from.col || c2 !== d.to.col) {\n        add(dim.start, dim.openEnd, src.slice(dim.start, dim.openEnd).replace(/(\\sref\\s*=\\s*)([\"'])[^\"']*\\2/, `$1\"${colName(c1)}${r1}:${colName(c2)}${r2}\"`));\n      }\n    }\n    changed.set(sheetPath, splice(src, edits));\n  }\n  if (problems.length) return fail(422, 'cannot_fill', 'Nothing was filled. Fix every problem and send again.', problems);\n\n  // Ask the spreadsheet app to recalculate when it opens the file.\n  const calc = kid(book, 'calcPr');\n  if (!calc) {\n    const after = book.children.filter((c) => c.ns === MAIN && ['sheets', 'functionGroups', 'externalReferences', 'definedNames'].includes(c.local)).pop();\n    changed.set(bookPath, splice(bookText, [{ start: after.end, end: after.end, text: `<${book.prefix}calcPr fullCalcOnLoad=\"1\"/>` }]));\n  } else if (!isOn(attr(calc, 'fullCalcOnLoad'))) {\n    const tag = bookText.slice(calc.start, calc.openEnd).replace(/\\sfullCalcOnLoad\\s*=\\s*([\"'])[^\"']*\\1/, '');\n    changed.set(bookPath, splice(bookText, [{ start: calc.start, end: calc.openEnd, text: tag.replace(/\\s*(\\/?>)$/, ' fullCalcOnLoad=\"1\"$1') }]));\n  }\n\n  for (const [path, text] of changed) {\n    const part = parts.get(path.toLowerCase());\n    const meta = await this.helpers.prepareBinaryData(Buffer.from(text, 'utf8'), part.path, 'application/xml');\n    binary[part.key] = { ...meta, fileName: part.path };\n  }\n  return [{ json: { ok: true, part_fields: Object.keys(binary).join(','), file_name: `${base}-filled.${bookType === CT_MACRO ? 'xlsm' : 'xlsx'}` }, binary }];\n} catch (e) {\n  if (e instanceof Refusal) return fail(e.status, e.code, e.message);\n  throw e;\n}\n\nfunction splice(src, edits) {\n  let out = '';\n  let at = 0;\n  for (const e of [...edits].sort((a, b) => a.start - b.start || a.end - b.end)) {\n    out += src.slice(at, e.start) + e.text;\n    at = e.end;\n  }\n  return out + src.slice(at);\n}"
+      }
+    },
+    {
+      "id": "1c627e82-da53-ad57-2952-b7023acb8746",
+      "name": "All Cells Filled?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1380,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "ok",
+              "leftValue": "={{ $json.ok === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "94c7cc86-55c9-af3b-84bd-1d6fbb964682",
+      "name": "Pack Workbook",
+      "type": "n8n-nodes-base.compression",
+      "typeVersion": 1.1,
+      "onError": "continueErrorOutput",
+      "position": [
+        1600,
+        0
+      ],
+      "parameters": {
+        "operation": "compress",
+        "binaryPropertyName": "={{ $json.part_fields }}",
+        "outputFormat": "zip",
+        "fileName": "={{ $json.file_name }}",
+        "binaryPropertyOutput": "data"
+      }
+    },
+    {
+      "id": "67c35cd4-62bd-8fc3-0c5a-b24aa5acd68e",
+      "name": "Return Filled Workbook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1880,
+        0
+      ],
+      "parameters": {
+        "respondWith": "binary",
+        "responseDataSource": "set",
+        "inputFieldName": "data",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Disposition",
+                "value": "=attachment; filename=\"{{ $json.file_name }}\""
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "7d76688c-b773-81f3-c715-5813f23085da",
+      "name": "Return Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1600,
+        480
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json.ok === false ? $json.response : Object.assign({}, { error: 'internal_error', message: 'The workbook was not filled. Check the execution in n8n.', problems: [] })) }}",
+        "options": {
+          "responseCode": "={{ $json.ok === false ? $json.status : 500 }}"
+        }
+      }
+    },
+    {
+      "id": "5f00ba66-f627-bd34-47db-40206c7caee8",
+      "name": "Stop on Failed Fill",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        1880,
+        480
+      ],
+      "parameters": {
+        "errorType": "errorMessage",
+        "errorMessage": "={{ 'Excel fill failed: ' + ($json.ok === false ? $json.response.error : 'internal_error') }}"
+      }
+    },
+    {
+      "id": "34b68dcd-6081-e63f-e92a-7428dddbf6e6",
+      "name": "Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -720,
+        -180
+      ],
+      "parameters": {
+        "width": 640,
+        "height": 1010,
+        "content": "## Fill Excel template cells and keep formatting\n\n### How it works\nA webhook takes your .xlsx or .xlsm file plus JSON values, writes the mapped cells and returns the file.\n\nOnly two kinds of part change: worksheets with mapped cells, and `xl/workbook.xml` (asks for recalculation). All other parts are copied byte for byte: styles, macros, charts. Merges, dropdowns and formulas stay.\n\nIf any check fails, you get `{error, message, problems}`, no file.\n\n### Setup\n1. Create a Header Auth credential and select it in **Receive Template and Values**.\n2. In **Fill Settings**, edit `cell_map` and `max_file_mb`.\n3. Publish the workflow and copy the Production URL. Replace the capitals:\n\n```\ncurl --fail-with-body URL -H \"HEADER: SECRET\" -F \"template=@form.xlsx\" --form-string 'values={\"company_name\":\"Acme\"}' -o filled.xlsx\n```\nCheck the HTTP status: failures save JSON instead. Use .xlsm file names for macro workbooks.\n\n### Customization\nMap a field with `\"field\": \"Sheet!B3\"`. To translate values, use `\"field\": {\"cell\": \"Sheet!B4\", \"values\": {\"Married\": \"M\"}}`.\n\n### Limits\n- Text stays text, so leading zeros survive. Numbers and true/false keep their type. Null or \"\" clears. Omitted fields stay unchanged.\n- Dates are not converted. Rich text in a filled cell becomes plain.\n- Refused: formula cells, non-top-left merged cells, table headers and totals, locked cells on protected sheets, unknown fields, encrypted files, .xls, Strict Open XML.\n- Dropdown rules are not checked.\n- Saved formula results stay stale until recalculated. LibreOffice keeps them by default: press Ctrl+Shift+F9. Other readers show old results.\n- Package signatures become invalid.\n- No row appending or OneDrive download/upload.\n- n8n saves uploads and the auth header in execution data.\n- Not tested in Microsoft Excel."
+      }
+    },
+    {
+      "id": "06a3305d-97b8-6b6e-3d79-8eefa7f05f9b",
+      "name": "Section Request",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -180
+      ],
+      "parameters": {
+        "width": 900,
+        "height": 360,
+        "content": "## 1. Receive and check\nHeader Auth is required. Edit the field-to-cell map and upload limit (not the unpacked size) in Fill Settings. Settings, the file and every value are checked before the workbook is opened.",
+        "color": 7
+      }
+    },
+    {
+      "id": "ee468993-16f3-d758-afa2-6394ee99bd47",
+      "name": "Section Fill",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        880,
+        -180
+      ],
+      "parameters": {
+        "width": 920,
+        "height": 360,
+        "content": "## 2. Fill the mapped cells\nUnpacks the workbook, checks every target cell, edits those cells and the used-range record in the worksheet XML, then packs all parts again. One bad cell stops the whole fill.",
+        "color": 7
+      }
+    },
+    {
+      "id": "22f254ac-eb27-4db8-61b6-0ba9f7bd9956",
+      "name": "Section Return",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1820,
+        -180
+      ],
+      "parameters": {
+        "width": 300,
+        "height": 360,
+        "content": "## 3. Return the file\nSends back the filled .xlsx or .xlsm.",
+        "color": 7
+      }
+    },
+    {
+      "id": "33aa5a2c-d4aa-4f48-df49-b587fe3e131d",
+      "name": "Section Errors",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1520,
+        300
+      ],
+      "parameters": {
+        "width": 600,
+        "height": 340,
+        "content": "## Failed fills\nThe caller gets a status code and JSON, never a file. The execution then ends as an error.",
+        "color": 7
+      }
+    }
+  ],
+  "connections": {
+    "Receive Template and Values": {
+      "main": [
+        [
+          {
+            "node": "Fill Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fill Settings": {
+      "main": [
+        [
+          {
+            "node": "Check Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Request": {
+      "main": [
+        [
+          {
+            "node": "Request Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Request Valid?": {
+      "main": [
+        [
+          {
+            "node": "Unpack Workbook",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Unpack Workbook": {
+      "main": [
+        [
+          {
+            "node": "Fill Mapped Cells",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fill Mapped Cells": {
+      "main": [
+        [
+          {
+            "node": "All Cells Filled?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "All Cells Filled?": {
+      "main": [
+        [
+          {
+            "node": "Pack Workbook",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pack Workbook": {
+      "main": [
+        [
+          {
+            "node": "Return Filled Workbook",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Return Error": {
+      "main": [
+        [
+          {
+            "node": "Stop on Failed Fill",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {}
+}
